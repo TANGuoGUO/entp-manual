@@ -5,6 +5,7 @@ import calendar
 import ctypes
 import ctypes.wintypes
 import inspect
+import json
 import os
 import sqlite3
 import sys
@@ -3301,7 +3302,11 @@ class EntpFletApp:
             return
         database_path = self.db.path.resolve()
         markdown_root = self.markdown.root.resolve()
-        safety_dir = ROOT / "backups"
+        safety_dir = (
+            ROOT / "backups"
+            if database_path == DEFAULT_DB.resolve()
+            else database_path.parent / "backups"
+        )
         safety_path = safety_dir / (
             f"导入前自动备份_{datetime.now():%Y%m%d_%H%M%S}.entp.zip"
         )
@@ -3459,6 +3464,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qa-boundary-report", type=Path)
     parser.add_argument("--qa-boundary-error", action="store_true")
     parser.add_argument("--qa-execution-dialog", action="store_true")
+    parser.add_argument("--qa-e2e-report", type=Path)
     parser.add_argument("--qa-runtime-error", action="store_true")
     return parser.parse_args()
 
@@ -3515,6 +3521,19 @@ def main() -> None:
                 page.window.height = 720
                 page.update()
                 await asyncio.sleep(1.0)
+            if args.qa_e2e_report:
+                from tests.desktop_e2e import DesktopE2ERunner
+
+                result = await DesktopE2ERunner(
+                    ui,
+                    args.qa_e2e_report.resolve(),
+                ).run()
+                if result["failed"]:
+                    raise RuntimeError(
+                        f"桌面 E2E 有 {result['failed']} 个失败场景；"
+                        f"详见 {args.qa_e2e_report.resolve()}"
+                    )
+                ui.show_view(ui.NAV_CURRENT)
             if args.view == "vault":
                 await asyncio.sleep(0.6)
                 if args.qa_import_file:
@@ -3645,6 +3664,10 @@ def main() -> None:
             raise
 
     ft.run(app_main, assets_dir=str(ROOT / "assets"))
+    if args.qa_e2e_report and args.qa_e2e_report.exists():
+        report = json.loads(args.qa_e2e_report.read_text(encoding="utf-8"))
+        if int(report.get("failed", 0)):
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

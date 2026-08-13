@@ -227,3 +227,46 @@ cd G:\project\entp
 - 系统原生“保存文件 / 选择文件”窗口需要人工点击；自动化从选择后的备份校验、确认、自动安全备份到重新连接均已覆盖。
 - “刷新闪烁”只通过 180 ms AnimatedSwitcher 配置和多次启动截图检查，没有高帧率录屏量化。
 - 历史 `logs/flet-startup-error.log` 中留有 2026-08-13 00:54 的旧版 `Container(min_height=...)` 错误；本轮当前代码 12 次窗口启动均成功，该日志不是本轮新失败，但日志策略应加入时间/会话分隔，避免误判。
+
+## 9. 原生桌面 E2E 结果（2026-08-13）
+
+结论：当前 Flet 界面中真正可到达的流程在宽屏与紧凑窗口分别为 **15/15 通过**（合计 30 次端到端场景），数据契约检查在两个视口分别为 **3/3 通过**，失败 **0**。每个视口均审计最终页面树中的 39 个交互回调，未保护回调为 **0**。原有回归测试再次执行为 **65/65 通过**。
+
+本轮没有把“数据库方法存在”误写成“UI E2E 已覆盖”：尚未接入当前 Flet 界面的功能单独列为产品覆盖缺口。
+
+| 分类 | 结果 | 说明 |
+|---|---:|---|
+| 原生 Flet UI E2E | 宽屏 15/15；紧凑窗口 15/15 | 真实控件回调，核对 UI、SQLite、Markdown 与恢复状态 |
+| 数据契约 | 宽屏 3/3；紧凑窗口 3/3 | 灵感关系/执行/转任务、Markdown 自由正文、可选期限默认值 |
+| 自动化失败 | 0 | 隔离数据库完整重跑 |
+| 回归测试 | 65/65 | `unittest discover` |
+| 交互异常边界 | 39/39 | `unprotected=[]` |
+
+已通过的端到端主链路包括：
+
+- 空白编辑创建主线并切换为当前主线；快速输入创建任务。
+- 任务详情自动保存、设为当前推进、执行记录、完成、重开以及完成日历留痕。
+- 今日收集箱、过期任务顺延、分组折叠和优先级排序。
+- 点击无日志日期、二月月底、前后月份切换，不再导致会话崩溃。
+- 当前页暂存灵感、候审区审视、自由正文、标签和状态更新。
+- 主线归档与恢复；完整工作空间导出、导入、导入前安全备份和数据库重连。
+- 空任务/空灵感输入；强制异常后的用户提示、事务回滚和导航状态恢复。
+
+当前确认的 UI 覆盖缺口：
+
+1. 主线的 7/14/30 天承诺、可选复盘日期已有数据库字段，但当前 Flet 主线编辑页没有控件。
+2. 今日页可以按优先级排序，但当前 Flet 任务详情没有修改优先级的入口。
+3. 灵感关系、灵感执行记录和一键转任务已有数据层能力，但当前 Flet 灵感详情没有入口。
+4. 当前 Flet 仅能调用外部 Markdown 应用；旧版 Tkinter 的内置源码编辑/实时预览尚未迁移。
+5. Windows 原生保存/选择文件窗口无法通过 Flutter 控件树自动化；选择文件之后的校验、确认、恢复、回滚已经覆盖。
+
+复现命令：
+
+```powershell
+cd G:\project\entp
+.\.venv\Scripts\python.exe flet_app.py --db outputs\desktop-e2e-all-20260813-r3.db --view current --qa-e2e-report outputs\desktop-e2e-all-20260813-r3-report.json --qa-screenshot outputs\desktop-e2e-all-20260813-r3-final.png
+.\.venv\Scripts\python.exe flet_app.py --db outputs\desktop-e2e-compact-20260813.db --view current --qa-compact --qa-e2e-report outputs\desktop-e2e-compact-20260813-report.json --qa-screenshot outputs\desktop-e2e-compact-20260813-final.png
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
+```
+
+机器可读报告：`outputs/desktop-e2e-all-20260813-r3-report.json`、`outputs/desktop-e2e-compact-20260813-report.json`。最终原生窗口证据：`outputs/desktop-e2e-all-20260813-r3-final.png`、`outputs/desktop-e2e-compact-20260813-final.png`。正式 `entp_manual.db` 未被本轮 E2E 修改。
