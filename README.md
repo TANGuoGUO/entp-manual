@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>一个帮助想法很多、但容易被新鲜感带走的人持续推进事情的 Windows 桌面工具。</strong>
+  <strong>一款用来记录新灵感、推进当前主线的 Windows 桌面工具。</strong>
 </p>
 
 <p align="center">
