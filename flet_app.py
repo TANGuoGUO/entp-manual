@@ -36,7 +36,18 @@ if os.name == "nt":
         pass
 
 
-ROOT = Path(__file__).resolve().parent
+SOURCE_ROOT = Path(__file__).resolve().parent
+if getattr(sys, "frozen", False):
+    # Installed builds may live below Program Files, which is not writable by
+    # a standard user. Keep personal data in LocalAppData and load bundled
+    # resources from PyInstaller's extraction directory.
+    local_app_data = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    ROOT = local_app_data / "ENTP自强手册"
+    ROOT.mkdir(parents=True, exist_ok=True)
+    RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT)).resolve()
+else:
+    ROOT = SOURCE_ROOT
+    RESOURCE_ROOT = SOURCE_ROOT
 DEFAULT_DB = ROOT / "entp_manual.db"
 RUNTIME_ERROR_LOG = ROOT / "logs" / "runtime-errors.log"
 
@@ -3663,7 +3674,7 @@ def main() -> None:
                 pass
             raise
 
-    ft.run(app_main, assets_dir=str(ROOT / "assets"))
+    ft.run(app_main, assets_dir=str(RESOURCE_ROOT / "assets"))
     if args.qa_e2e_report and args.qa_e2e_report.exists():
         report = json.loads(args.qa_e2e_report.read_text(encoding="utf-8"))
         if int(report.get("failed", 0)):

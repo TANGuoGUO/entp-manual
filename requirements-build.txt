@@ -1,0 +1,2 @@
+-r requirements-flet.txt
+PyInstaller==6.22.0

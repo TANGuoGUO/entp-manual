@@ -15,3 +15,8 @@ backups/
 markdown/
 outputs/
 tmppdauzxck/
+
+# Windows packaging outputs.
+build/
+release/
+*.spec
