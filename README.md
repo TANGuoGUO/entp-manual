@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/TANGuoGUO/entp-manual/releases/latest">下载最新版</a>
+  <a href="https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.0.0-Setup.exe">下载 Windows 安装版</a>
   ·
   <a href="PRODUCT_DESIGN.md">产品设计</a>
   ·
@@ -33,10 +33,10 @@
 
 ## 下载 Windows 初始化版
 
-前往 [GitHub Releases](https://github.com/TANGuoGUO/entp-manual/releases/latest) 下载：
+点击 [直接下载 Windows 安装版](https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.0.0-Setup.exe)，或进入 [GitHub Releases](https://github.com/TANGuoGUO/entp-manual/releases/latest) 查看版本说明。
 
 ```text
-ENTP自强手册_2.0.0_初始化版.exe
+ENTP-Manual-2.0.0-Setup.exe
 ```
 
 安装时可以选择：
