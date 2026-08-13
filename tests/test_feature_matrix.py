@@ -109,6 +109,49 @@ class StartupSchemaTests(TemporaryDatabaseTestCase):
         self.assertNotEqual(current, archived_id)
         self.assertIn(current, self.active_mainlines())
 
+    def test_ST_05_fresh_workspace_is_a_functional_product_tour(self) -> None:
+        current = self.db.row(
+            "SELECT * FROM mainlines WHERE id = ?", (self.db.current_mainline_id(),)
+        )
+        self.assertEqual(current["name"], "欢迎：先认识这套工作流")
+        self.assertEqual(self.db.get_setting("onboarding_seed_version"), "1")
+        self.assertIsNotNone(
+            self.db.row("SELECT id FROM mainlines WHERE name = '收集箱'")
+        )
+
+        task_titles = {str(row["title"]) for row in self.db.list_tasks()}
+        for feature_hint in (
+            "回车添加",
+            "自由记录详情",
+            "没动力",
+            "Markdown",
+            "完成日历",
+            "保管箱",
+            "归档和恢复",
+            "收集箱",
+        ):
+            self.assertTrue(
+                any(feature_hint in title for title in task_titles),
+                f"初始化任务缺少功能介绍：{feature_hint}",
+            )
+
+        statuses = {str(row["status"]) for row in self.db.list_thoughts()}
+        self.assertEqual(statuses, {"未审视", "待孵化", "正在尝试", "已归档"})
+        self.assertTrue(self.db.completion_days(date.today().year, date.today().month))
+        self.assertTrue(self.db.completed_entries_on(date.today().isoformat()))
+        self.assertTrue(
+            self.db.completed_entries_on((date.today() - timedelta(days=1)).isoformat())
+        )
+        self.assertFalse(
+            task_titles
+            & {
+                "整理选题清单",
+                "完成脚本初稿",
+                "录制视频素材",
+                "梳理阅读笔记标签",
+            }
+        )
+
 
 class MainlineTests(TemporaryDatabaseTestCase):
     def test_ML_01_03_create_and_edit_freeform_mainline(self) -> None:

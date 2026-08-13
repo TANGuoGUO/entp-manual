@@ -334,69 +334,233 @@ class Database:
         if count:
             return
 
-        today = datetime.now().date()
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+        now = self.local_timestamp()
         cur = self.conn.cursor()
         cur.execute(
             "INSERT INTO mainlines(name, vision, color) VALUES (?, ?, ?)",
-            ("建立稳定的创作系统", "把灵感转化为每周稳定发布、可持续复盘的内容系统。", "#1976E9"),
+            (
+                "欢迎：先认识这套工作流",
+                "执行区一次只突出一条当前主线；先把下一步做小，在现实里留下变化。所有示例都可以直接改成你的内容。",
+                "#316BEE",
+            ),
         )
-        creative_id = cur.lastrowid
+        welcome_id = int(cur.lastrowid)
         cur.execute(
             "INSERT INTO mainlines(name, vision, color) VALUES (?, ?, ?)",
-            ("建立个人知识体系", "把输入、判断和输出连接成可复用的知识网络。", "#7B61FF"),
+            (
+                "示例：其他主线会进入保管箱",
+                "你可以保存多条主线，但它们不会并排争夺注意力；需要时再从保管箱切换回来。",
+                "#8B6FD6",
+            ),
         )
-        knowledge_id = cur.lastrowid
+        vault_demo_id = int(cur.lastrowid)
+        cur.execute(
+            "INSERT INTO mainlines(name, vision, color) VALUES (?, ?, ?)",
+            (
+                "收集箱",
+                "临时接住今天冒出的任务；之后再决定它是否属于某条主线。",
+                "#8B9099",
+            ),
+        )
+        inbox_id = int(cur.lastrowid)
 
         task_rows = [
-            (creative_id, "整理选题清单", "从用户问题中整理本周可执行选题。", "执行中", "重要", today.isoformat(), 1, 45),
-            (creative_id, "完成脚本初稿", "完成一期播客脚本的结构和开场。", "今日", "重要", today.isoformat(), 1, 10),
-            (creative_id, "录制视频素材", "完成三段核心素材录制。", "今日", "普通", today.isoformat(), 1, 0),
-            (creative_id, "研究热门话题趋势", "采集近七天同类账号高互动内容。", "待执行", "普通", (today + timedelta(days=1)).isoformat(), 0, 0),
-            (creative_id, "收集案例与素材", "为本周脚本建立证据和案例库。", "待执行", "普通", (today + timedelta(days=2)).isoformat(), 0, 0),
-            (creative_id, "复盘发布数据", "记录点击、完播和评论中的问题。", "完成", "普通", (today - timedelta(days=1)).isoformat(), 0, 100),
-            (knowledge_id, "梳理阅读笔记标签", "减少重复标签，建立主题入口。", "执行中", "普通", today.isoformat(), 1, 30),
-            (knowledge_id, "建立每周回顾模板", "固定回顾本周输入、输出和判断。", "待执行", "普通", "", 0, 0),
+            (
+                welcome_id,
+                "从这里开始：把下一步写小一点",
+                "当前任务会单独突出。点击任务可打开详情；“记录一次执行”用来留下行动、结果和新的下一步。",
+                "执行中",
+                "重要",
+                today.isoformat(),
+                1,
+                1,
+                "点击“记录一次执行”，写下你刚刚真正做了什么",
+                20,
+                "",
+            ),
+            (
+                welcome_id,
+                "试试上方输入框：回车添加一个真实任务",
+                "创建任务不弹表单。先写一句标题，之后再按需要补充正文和最小行动。",
+                "今日",
+                "普通",
+                today.isoformat(),
+                1,
+                0,
+                "在页面顶部输入一个任务并按回车",
+                0,
+                "",
+            ),
+            (
+                welcome_id,
+                "点击任一任务：右侧可以自由记录详情",
+                "任务详情会自动保存；每个任务也有一个独立 Markdown 文档。",
+                "今日",
+                "普通",
+                today.isoformat(),
+                1,
+                0,
+                "点开本任务，改写标题或正文",
+                0,
+                "",
+            ),
+            (
+                welcome_id,
+                "没动力时点“没动力了”：去审视灵感",
+                "它表示新鲜感下降，不是任务失败。候审区里的不同灵感可以重新激发兴趣。",
+                "待执行",
+                "普通",
+                "",
+                0,
+                0,
+                "打开候审区，挑一条真正让你好奇的灵感",
+                0,
+                "",
+            ),
+            (
+                welcome_id,
+                "每个小块都有独立 Markdown 文档",
+                "主线、任务、灵感、执行记录和每日账本都会同步为本地 Markdown，方便长期记录和迁移。",
+                "待执行",
+                "普通",
+                "",
+                0,
+                0,
+                "点击任一文档图标查看对应文件",
+                0,
+                "",
+            ),
+            (
+                welcome_id,
+                "示例完成：勾选任务后会写入完成日历",
+                "这是初始化的完成示例。完成并不是把任务藏起来，而是在日期账本中留下事实。",
+                "完成",
+                "普通",
+                today.isoformat(),
+                0,
+                0,
+                "",
+                100,
+                now,
+            ),
+            (
+                welcome_id,
+                "示例历史：昨天完成的内容仍然可以回看",
+                "切换日期或打开完成日历，可以看到过去真正完成过什么；重新打开任务也不会抹掉历史事实。",
+                "完成",
+                "普通",
+                yesterday.isoformat(),
+                0,
+                0,
+                "",
+                100,
+                f"{yesterday.isoformat()}T18:30:00+08:00",
+            ),
+            (
+                vault_demo_id,
+                "保管箱让其他可能性暂时退出视野",
+                "它们仍然保留任务和 Markdown，只是不出现在当前执行区。",
+                "待执行",
+                "普通",
+                "",
+                0,
+                1,
+                "需要切换方向时，再主动进入主线保管箱",
+                0,
+                "",
+            ),
+            (
+                vault_demo_id,
+                "主线可以归档和恢复，不会删除内容",
+                "归档用于降低干扰；最后一条活动主线不会被归档，避免工作区失去入口。",
+                "待执行",
+                "普通",
+                "",
+                0,
+                0,
+                "在保管箱中查看归档按钮",
+                0,
+                "",
+            ),
+            (
+                inbox_id,
+                "收集箱：临时接住今天冒出的任务",
+                "今日清单顶部可以快速添加；没有归属的任务先放这里，不必当场分类。",
+                "今日",
+                "普通",
+                today.isoformat(),
+                1,
+                1,
+                "打开今日清单，体验快速收纳",
+                0,
+                "",
+            ),
         ]
         cur.executemany(
             """INSERT INTO tasks(
-                mainline_id, title, description, status, priority, due_date, is_today, progress
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                mainline_id, title, description, status, priority, due_date,
+                is_today, is_focus, next_action, progress, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             task_rows,
         )
 
         thought_rows = [
             (
-                creative_id,
-                "用问题而不是主题做选题",
-                "与其先想主题，不如先收集用户真正问过的问题。",
-                "问题型选题更容易形成明确承诺，也更容易验证价值。",
-                "真实问题天然包含痛点、语境和结果期待；标题也更具体。",
-                "补充 5 个关于内容定位的问题，完善问题库。",
-                "正在尝试",
-                45,
+                None,
+                "灵感默认不关联主线：先接住，不打断执行",
+                "候审区是独立灵感池。执行时冒出的想法先快速收纳，不要求立刻分类，也不自动切换当前任务。",
+                "未审视",
+                "核心理念,快速收纳",
             ),
-            (creative_id, "播客内容可以拆成短视频", "一段完整播客可以按观点拆成多个短内容。", "", "", "", "未审视", 0),
-            (creative_id, "每周做一次失败复盘", "失败不是废稿，可以成为下一周的输入。", "", "", "", "未审视", 0),
-            (creative_id, "建立选题问题库并持续更新", "单独维护用户问题，选题时直接调用。", "", "", "", "未审视", 0),
-            (creative_id, "搭建内容框架模板库", "把高表现内容的结构抽象成模板。", "", "", "", "待孵化", 10),
-            (creative_id, "从用户痛点收集问题", "评论区和私信比凭空头脑风暴更接近真实需求。", "把问题按痛点阶段分类。", "已验证的用户表达可直接成为选题语言。", "每周整理一次新增问题。", "已归档", 100),
-            (knowledge_id, "笔记应该指向下一次使用", "如果一条笔记没有使用场景，之后很难被找到。", "", "", "", "未审视", 0),
+            (
+                None,
+                "点开卡片：正文是一张自由 Markdown 记录页",
+                "系统不预设类别、问题模板或标准答案。标题、标签和正文都可以按你的思考方式自由填写，并在离开输入框时自动保存。",
+                "未审视",
+                "Markdown,自由记录",
+            ),
+            (
+                None,
+                "小图标可以一键孵化、尝试或归档",
+                "卡片底部的三个图标直接改变去向，不需要打开下拉框。待孵化表示值得以后继续，但现在不抢占主线。",
+                "待孵化",
+                "一键操作,状态",
+            ),
+            (
+                welcome_id,
+                "正在尝试：把想法改成一次低成本实验",
+                "尝试不是承诺把整件事做完，只需要验证一个关键假设。它可以选择关联主线，但关联不是灵感的必填归宿。",
+                "正在尝试",
+                "最小实验,执行",
+            ),
+            (
+                None,
+                "已归档是灵感回收站，可以恢复",
+                "归档只让灵感退出日常候审，不会删除标题、标签或 Markdown。进入“已归档”即可查看并恢复到未审视。",
+                "已归档",
+                "归档,恢复",
+            ),
         ]
         cur.executemany(
             """INSERT INTO thoughts(
-                mainline_id, title, raw_content, conclusion, evidence, next_step, status, progress
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                mainline_id, title, raw_content, status, tags
+            ) VALUES (?, ?, ?, ?, ?)""",
             thought_rows,
         )
 
         selected_thought = cur.execute(
-            "SELECT id FROM thoughts WHERE title = ?", ("用问题而不是主题做选题",)
+            "SELECT id FROM thoughts WHERE title = ?",
+            ("正在尝试：把想法改成一次低成本实验",),
         ).fetchone()[0]
         supporting_thought = cur.execute(
-            "SELECT id FROM thoughts WHERE title = ?", ("从用户痛点收集问题",)
+            "SELECT id FROM thoughts WHERE title = ?",
+            ("小图标可以一键孵化、尝试或归档",),
         ).fetchone()[0]
         selected_task = cur.execute(
-            "SELECT id FROM tasks WHERE title = ?", ("整理选题清单",)
+            "SELECT id FROM tasks WHERE title = ?",
+            ("从这里开始：把下一步写小一点",),
         ).fetchone()[0]
         cur.execute(
             "INSERT INTO thought_task_links(thought_id, task_id) VALUES (?, ?)",
@@ -410,30 +574,12 @@ class Database:
         log_rows = [
             (
                 selected_thought,
-                "初步列出常见选题方式对比。",
-                "问题选题优于主题选题。",
-                "数据样本不足。",
-                "收集更多案例数据验证。",
-                20,
-                (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S"),
-            ),
-            (
-                selected_thought,
-                "梳理了问题收集渠道和方法。",
-                "确定通过评论区、私信和问卷收集。",
-                "问卷参与度较低。",
-                "优化问卷话术并增加激励。",
-                35,
-                (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),
-            ),
-            (
-                selected_thought,
-                "收集了 15 个用户问题，并初步分类整理。",
-                "问题多集中在起步困难和内容定位。",
-                "部分问题不够具体，需要进一步追问。",
-                "补充 5 个关于内容定位的问题。",
-                45,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "示例行动：把一个大想法缩成 15 分钟能开始的动作。",
+                "示例结果：得到现实反馈，而不是只在脑中想通。",
+                "示例阻碍：第一次尝试不完整是正常的。",
+                "示例下一步：根据反馈决定继续、修改或归档。",
+                25,
+                now,
             ),
         ]
         cur.executemany(
@@ -441,6 +587,97 @@ class Database:
                 thought_id, action, result, blocker, next_step, progress, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
             log_rows,
+        )
+
+        cur.execute(
+            """INSERT INTO task_execution_logs(
+                   task_id, mainline_id, task_title_snapshot, action,
+                   result, next_action, event_date, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                selected_task,
+                welcome_id,
+                "从这里开始：把下一步写小一点",
+                "示例行动：打开应用并看见当前主线。",
+                "示例结果：已经知道执行区只突出一条主线。",
+                "把示例任务改成自己真正要做的下一步。",
+                today.isoformat(),
+                now,
+            ),
+        )
+
+        def seed_completion(task_title: str, day_value: date, completed_at: str) -> None:
+            task = cur.execute(
+                """SELECT t.*, m.name AS mainline_name, m.color AS mainline_color
+                     FROM tasks t JOIN mainlines m ON m.id = t.mainline_id
+                     WHERE t.title = ?""",
+                (task_title,),
+            ).fetchone()
+            cur.execute(
+                """INSERT INTO daily_entries(
+                       entry_date, task_id, task_title_snapshot, mainline_id,
+                       mainline_name_snapshot, mainline_color_snapshot,
+                       priority_snapshot, due_date_snapshot, state, source,
+                       completed_at, proof, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', 'onboarding', ?, ?, ?, ?)""",
+                (
+                    day_value.isoformat(),
+                    task["id"],
+                    task["title"],
+                    task["mainline_id"],
+                    task["mainline_name"],
+                    task["mainline_color"],
+                    task["priority"],
+                    task["due_date"],
+                    completed_at,
+                    "这是初始化示例：完成任务后，现实结果会留在对应日期。",
+                    completed_at,
+                    completed_at,
+                ),
+            )
+            entry_id = int(cur.lastrowid)
+            cur.execute(
+                """INSERT INTO task_events(
+                       task_id, daily_entry_id, event_type, event_date, occurred_at,
+                       task_title_snapshot, details_json
+                   ) VALUES (?, ?, 'completed', ?, ?, ?, ?)""",
+                (
+                    task["id"],
+                    entry_id,
+                    day_value.isoformat(),
+                    completed_at,
+                    task["title"],
+                    json.dumps({"source": "onboarding"}, ensure_ascii=False),
+                ),
+            )
+
+        seed_completion(
+            "示例完成：勾选任务后会写入完成日历",
+            today,
+            now,
+        )
+        seed_completion(
+            "示例历史：昨天完成的内容仍然可以回看",
+            yesterday,
+            f"{yesterday.isoformat()}T18:30:00+08:00",
+        )
+        cur.execute(
+            """INSERT INTO daily_notes(note_date, intention, reflection, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                today.isoformat(),
+                "今日页汇总所有主线；先选择少量真正准备推进的任务。",
+                "完成与未完成都会留在当天账本，不会因日期更迭而被改写。",
+                now,
+                now,
+            ),
+        )
+        cur.executemany(
+            "INSERT INTO app_settings(key, value) VALUES (?, ?)",
+            (
+                ("current_mainline_id", str(welcome_id)),
+                ("onboarding_seed_version", "1"),
+            ),
         )
         self.conn.commit()
 
