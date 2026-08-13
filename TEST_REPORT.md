@@ -2,7 +2,7 @@
 
 测试日期：2026-08-13  
 测试对象：`G:\project\entp` 当前 Flet 2.0 版本  
-结论：**首轮问题与完整导出/导入功能均已验证。当前 56/56 个自动化测试通过，完整备份往返、损坏包拒绝、恢复中断回滚、导入前自动备份和 Flet 原生界面复核通过。**
+结论：**首轮问题、完整导出/导入与日历空日期崩溃修复均已验证。当前 58/58 个自动化测试通过，原生 Flet 空日期页面复核通过。**
 
 ## 1. 已修复的问题（按优先级）
 
@@ -71,9 +71,9 @@
 
 | 检查 | 结果 |
 |---|---:|
-| 预先设计的场景 | 95 条 |
-| 自动化测试方法 | 56 个（部分方法组合多个场景） |
-| 自动化通过 | 56 |
+| 预先设计的场景 | 96 条 |
+| 自动化测试方法 | 58 个（部分方法组合多个场景） |
+| 自动化通过 | 58 |
 | 失败/预期失败 | 0 |
 | 原有专项回归脚本 | 2/2 通过 |
 | 原生 Flet 状态截图 | 11/11 生成并人工复核 |
@@ -113,6 +113,10 @@
 - 非法日期会明确失败；空日期查询安全返回。
 
 ### 完成日历
+
+- 修复执行区小日历回调晚绑定：月底循环结束时的占位日 `0` 不再污染已生成的日期格。
+- 逐一调用 2026 年 2 月的 28 个日期回调，均能保持各自日期；无记录日期显示空状态。
+- 日期选择、月份切换与打开每日日志均加入局部异常隔离；单次错误只记录并提示，不再逃逸到 Flet 会话。
 
 - 同一天来自不同主线的完成记录会合并计数，并可按主线筛选。
 - 完成后重新打开，历史完成事实仍保留。
@@ -165,19 +169,20 @@ UI 测试没有使用浏览器 DOM 自动化，因为这是原生 Flet 桌面窗
 
 ```powershell
 cd G:\project\entp
-.\.venv\Scripts\python.exe -m py_compile flet_app.py database.py markdown_store.py backup_service.py launcher_flet.pyw tests\test_feature_matrix.py tests\test_backup_restore.py tests\prepare_ui_qa.py
+.\.venv\Scripts\python.exe -m py_compile flet_app.py database.py markdown_store.py backup_service.py launcher_flet.pyw tests\test_feature_matrix.py tests\test_backup_restore.py tests\test_calendar_ui_safety.py tests\prepare_ui_qa.py
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
 .\.venv\Scripts\python.exe -m tests.test_daily_ledger
 .\.venv\Scripts\python.exe -m tests.test_archive_mainline
 ```
 
-自动化套件当前没有 `expectedFailure`，所有 56 个测试均要求正常通过。
+自动化套件当前没有 `expectedFailure`，所有 58 个测试均要求正常通过。
 
 ## 7. 测试证据
 
 - 测试计划：`TEST_PLAN.md`
 - 自动化用例：`tests/test_feature_matrix.py`
 - 完整备份用例：`tests/test_backup_restore.py`
+- 日历交互安全用例：`tests/test_calendar_ui_safety.py`
 - UI 数据准备：`tests/prepare_ui_qa.py`
 - 截图目录：`designs/test-20260813/`
 - 代表截图：
@@ -198,6 +203,7 @@ cd G:\project\entp
   - `fixed-launcher-startup.png`
   - `outputs/backup-vault-compact-clean.png`
   - `outputs/backup-import-confirm-final.png`
+  - `outputs/calendar-empty-safe.png`
 
 ## 8. 剩余风险与未完全自动化部分
 

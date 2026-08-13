@@ -319,6 +319,18 @@ class EntpFletApp:
             message = "这次操作没有完成，错误已经记录到 logs/runtime-errors.log。"
         self._notify_error(message)
 
+    def _guard_ui_action(self, context: str, action, message: str):
+        """Keep a single failed interaction from escaping into the Flet session."""
+
+        def guarded(event) -> None:
+            try:
+                action(event)
+            except Exception:
+                self._write_runtime_error(context, traceback.format_exc())
+                self._notify_error(f"{message}。当前页面和数据不受影响，可以继续使用。")
+
+        return guarded
+
     def _close_database(self) -> None:
         if self._closed:
             return
@@ -925,10 +937,14 @@ class EntpFletApp:
                     border_radius=12,
                     col=1,
                     tooltip=f"{day_iso} · 完成 {count} 项" if count else day_iso,
-                    on_click=(
-                        lambda _, picked=date(year, month, day_num): self.open_completion_calendar(picked)
-                        if date(year, month, day_num) <= date.today()
-                        else None
+                    on_click=self._guard_ui_action(
+                        "打开执行区完成日历日期失败",
+                        lambda _, picked=date(year, month, day_num): (
+                            self.open_completion_calendar(picked)
+                            if picked <= date.today()
+                            else None
+                        ),
+                        "无法打开这个日期",
                     ),
                 )
                 day_cells.append(cell)
@@ -2558,7 +2574,15 @@ class EntpFletApp:
                         border=ft.Border.all(1, BLUE_SOFT if is_today and not selected else "#00000000"),
                         border_radius=14,
                         tooltip=f"{day_iso} · 完成 {count} 项" if count else day_iso,
-                        on_click=(None if future else lambda _, picked=value: self.select_completion_day(picked)),
+                        on_click=(
+                            None
+                            if future
+                            else self._guard_ui_action(
+                                "选择完成日历日期失败",
+                                lambda _, picked=value: self.select_completion_day(picked),
+                                "无法查看这个日期",
+                            )
+                        ),
                     )
                 )
         return ft.Card(
@@ -2571,7 +2595,11 @@ class EntpFletApp:
                                     ft.Icons.CHEVRON_LEFT_ROUNDED,
                                     tooltip="上个月",
                                     icon_color=MUTED,
-                                    on_click=lambda _: self.shift_completion_month(-1),
+                                    on_click=self._guard_ui_action(
+                                        "切换到上个月失败",
+                                        lambda _: self.shift_completion_month(-1),
+                                        "无法切换月份",
+                                    ),
                                 ),
                                 ft.Text(
                                     f"{month.year} 年 {month.month} 月",
@@ -2584,7 +2612,11 @@ class EntpFletApp:
                                     tooltip="下个月",
                                     icon_color=MUTED,
                                     disabled=month >= date.today().replace(day=1),
-                                    on_click=lambda _: self.shift_completion_month(1),
+                                    on_click=self._guard_ui_action(
+                                        "切换到下个月失败",
+                                        lambda _: self.shift_completion_month(1),
+                                        "无法切换月份",
+                                    ),
                                 ),
                             ],
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -2678,7 +2710,11 @@ class EntpFletApp:
                         ft.OutlinedButton(
                             "查看当天账本",
                             icon=ft.Icons.MENU_BOOK_OUTLINED,
-                            on_click=lambda _: self.open_daily_ledger(day),
+                            on_click=self._guard_ui_action(
+                                "打开每日日志失败",
+                                lambda _: self.open_daily_ledger(day),
+                                "无法打开这一天的日志",
+                            ),
                             style=ft.ButtonStyle(shape=rounded(12), color=BLUE, side=ft.BorderSide(1, "#C9D8FF")),
                         ),
                     ],
