@@ -4,7 +4,9 @@ import argparse
 import calendar
 import ctypes
 import ctypes.wintypes
+import inspect
 import os
+import sqlite3
 import sys
 import traceback
 from datetime import date, datetime, timedelta
@@ -91,6 +93,8 @@ class EntpFletApp:
     def __init__(self, page: ft.Page, db_path: Path, initial_view: str = "current") -> None:
         self.page = page
         self._closed = False
+        self._original_page_update = page.update
+        self.page.update = self._protected_page_update
         self.file_picker = ft.FilePicker()
         self.page.services.append(self.file_picker)
         self.db = Database(db_path)
@@ -249,10 +253,19 @@ class EntpFletApp:
         self.page.enable_screenshots = True
         self.page.theme_mode = ft.ThemeMode.LIGHT
         self.page.on_error = self._handle_page_error
-        self.page.on_close = self._handle_page_closed
-        self.page.on_disconnect = self._handle_page_closed
+        self.page.on_close = self._wrap_event_handler(
+            self._handle_page_closed,
+            "关闭页面时释放数据库失败",
+        )
+        self.page.on_disconnect = self._wrap_event_handler(
+            self._handle_page_closed,
+            "页面断开时释放数据库失败",
+        )
         self.page.window.prevent_close = True
-        self.page.window.on_event = self._handle_window_event
+        self.page.window.on_event = self._wrap_event_handler(
+            self._handle_window_event,
+            "处理窗口事件失败",
+        )
         # Let the OS provide the real DPI-aware work area. Explicitly requesting
         # a 1440-DIP window on a scaled Windows desktop makes the right side land
         # off-screen even though Flet reports a wide viewport.
@@ -316,20 +329,224 @@ class EntpFletApp:
         if "database is locked" in details.lower():
             message = "数据库暂时被其他程序占用，本次操作没有完成。请稍后再试。"
         else:
-            message = "这次操作没有完成，错误已经记录到 logs/runtime-errors.log。"
+            message = "这次操作没有完成，错误已经记录；当前窗口可以继续使用。"
         self._notify_error(message)
+
+    @staticmethod
+    def _control_label(control: ft.Control, event_name: str) -> str:
+        values = getattr(control, "_values", {})
+        for key in ("tooltip", "label", "content", "value"):
+            value = values.get(key)
+            if isinstance(value, str) and value.strip():
+                return f"{type(control).__name__}「{value.strip()[:40]}」.{event_name}"
+        return f"{type(control).__name__}.{event_name}"
+
+    @staticmethod
+    def _interaction_error_message(error: Exception) -> str:
+        if isinstance(error, BackupError):
+            return str(error)
+        if isinstance(error, sqlite3.OperationalError):
+            if "locked" in str(error).lower():
+                return "数据库暂时被占用，本次操作没有保存，请稍后重试"
+            return f"数据库操作没有完成：{error}"
+        if isinstance(error, PermissionError):
+            return "文件正在被占用或没有访问权限，本次操作没有完成"
+        if isinstance(error, OSError):
+            return f"文件操作没有完成：{error}"
+        if isinstance(error, ValueError) and str(error).strip():
+            return str(error)
+        return "这次操作没有完成；当前窗口仍可继续使用，请重试或切换页面确认状态"
+
+    def _report_interaction_error(
+        self,
+        context: str,
+        error: Exception,
+        message: str | None = None,
+        details: str | None = None,
+    ) -> None:
+        original_details = details or traceback.format_exc()
+        try:
+            if hasattr(self, "db") and self.db.conn.in_transaction:
+                self.db.conn.rollback()
+        except Exception:
+            self._write_runtime_error(
+                f"{context}；回滚未完成事务失败",
+                traceback.format_exc(),
+            )
+        self._write_runtime_error(context, original_details)
+        self._notify_error(message or self._interaction_error_message(error))
+
+    def _interaction_state_snapshot(self) -> dict[str, object]:
+        names = (
+            "active_index",
+            "current_mid",
+            "selected_task_id",
+            "selected_thought_id",
+            "selected_mainline_id",
+            "selected_day",
+            "calendar_month",
+            "calendar_selected_day",
+            "inspiration_capture_open",
+            "today_priority_sort",
+        )
+        snapshot: dict[str, object] = {}
+        for name in names:
+            try:
+                if hasattr(self, name):
+                    snapshot[name] = getattr(self, name)
+            except Exception:
+                self._write_runtime_error(
+                    f"创建交互快照失败：{name}",
+                    traceback.format_exc(),
+                )
+        try:
+            if hasattr(self, "today_collapsed"):
+                snapshot["today_collapsed"] = dict(self.today_collapsed)
+            if hasattr(self, "rail"):
+                snapshot["_rail_selected_index"] = self.rail.selected_index
+        except Exception:
+            self._write_runtime_error("创建交互快照失败", traceback.format_exc())
+        return snapshot
+
+    def _restore_interaction_state(self, snapshot: dict[str, object]) -> None:
+        for name, value in snapshot.items():
+            try:
+                if name == "_rail_selected_index" and hasattr(self, "rail"):
+                    self.rail.selected_index = value
+                else:
+                    setattr(self, name, value)
+            except Exception:
+                self._write_runtime_error(
+                    f"恢复交互状态失败：{name}",
+                    traceback.format_exc(),
+                )
+
+    def _wrap_event_handler(
+        self,
+        handler,
+        context: str,
+        message: str | None = None,
+    ):
+        if getattr(handler, "_entp_exception_boundary", False):
+            return handler
+        if inspect.iscoroutinefunction(handler):
+            async def guarded_async(*args, **kwargs):
+                snapshot = self._interaction_state_snapshot()
+                try:
+                    return await handler(*args, **kwargs)
+                except Exception as error:
+                    details = traceback.format_exc()
+                    self._restore_interaction_state(snapshot)
+                    self._report_interaction_error(context, error, message, details)
+                    return None
+
+            guarded_async._entp_exception_boundary = True
+            guarded_async.__name__ = getattr(handler, "__name__", "guarded_async_event")
+            return guarded_async
+
+        def guarded_sync(*args, **kwargs):
+            snapshot = self._interaction_state_snapshot()
+            try:
+                return handler(*args, **kwargs)
+            except Exception as error:
+                details = traceback.format_exc()
+                self._restore_interaction_state(snapshot)
+                self._report_interaction_error(context, error, message, details)
+                return None
+
+        guarded_sync._entp_exception_boundary = True
+        guarded_sync.__name__ = getattr(handler, "__name__", "guarded_event")
+        return guarded_sync
+
+    def _protect_control_tree(self, root: ft.Control | None) -> None:
+        if root is None:
+            return
+        pending: list[ft.Control] = [root]
+        visited: set[int] = set()
+        while pending:
+            control = pending.pop()
+            identity = id(control)
+            if identity in visited:
+                continue
+            visited.add(identity)
+            values = getattr(control, "_values", {})
+            for event_name, handler in list(values.items()):
+                if event_name.startswith("on_") and callable(handler):
+                    setattr(
+                        control,
+                        event_name,
+                        self._wrap_event_handler(
+                            handler,
+                            self._control_label(control, event_name),
+                        ),
+                    )
+            candidates = list(values.values())
+            for name, value in getattr(control, "__dict__", {}).items():
+                if name not in {"_values", "_dirty", "_internals", "data"}:
+                    candidates.append(value)
+            for value in candidates:
+                if isinstance(value, ft.Control):
+                    pending.append(value)
+                elif isinstance(value, (list, tuple)):
+                    pending.extend(item for item in value if isinstance(item, ft.Control))
+
+    def _protected_page_update(self, *controls: ft.Control) -> None:
+        roots = list(controls)
+        if not roots:
+            roots.extend(getattr(self.page, "controls", []))
+            roots.extend(getattr(self.page, "overlay", []))
+        for control in roots:
+            self._protect_control_tree(control)
+        self._original_page_update(*controls)
+
+    def interaction_boundary_audit(self) -> tuple[int, list[str]]:
+        total = 0
+        unprotected: list[str] = []
+        lifecycle_handlers = (
+            ("Page.on_close", getattr(self.page, "on_close", None)),
+            ("Page.on_disconnect", getattr(self.page, "on_disconnect", None)),
+            ("Window.on_event", getattr(getattr(self.page, "window", None), "on_event", None)),
+        )
+        for label, handler in lifecycle_handlers:
+            if callable(handler):
+                total += 1
+                if not getattr(handler, "_entp_exception_boundary", False):
+                    unprotected.append(label)
+        pending = [
+            *getattr(self.page, "controls", []),
+            *getattr(self.page, "overlay", []),
+        ]
+        visited: set[int] = set()
+        while pending:
+            control = pending.pop()
+            identity = id(control)
+            if identity in visited:
+                continue
+            visited.add(identity)
+            values = getattr(control, "_values", {})
+            for event_name, handler in values.items():
+                if event_name.startswith("on_") and callable(handler):
+                    total += 1
+                    if not getattr(handler, "_entp_exception_boundary", False):
+                        unprotected.append(self._control_label(control, event_name))
+            candidates = list(values.values())
+            for name, value in getattr(control, "__dict__", {}).items():
+                if name not in {"_values", "_dirty", "_internals", "data"}:
+                    candidates.append(value)
+            for value in candidates:
+                if isinstance(value, ft.Control):
+                    pending.append(value)
+                elif isinstance(value, (list, tuple)):
+                    pending.extend(item for item in value if isinstance(item, ft.Control))
+        return total, unprotected
 
     def _guard_ui_action(self, context: str, action, message: str):
         """Keep a single failed interaction from escaping into the Flet session."""
-
-        def guarded(event) -> None:
-            try:
-                action(event)
-            except Exception:
-                self._write_runtime_error(context, traceback.format_exc())
-                self._notify_error(f"{message}。当前页面和数据不受影响，可以继续使用。")
-
-        return guarded
+        return self._wrap_event_handler(
+            action,
+            context,
+            f"{message}。当前页面和数据不受影响，可以继续使用。",
+        )
 
     def _close_database(self) -> None:
         if self._closed:
@@ -3239,6 +3456,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qa-mainline-editor", action="store_true")
     parser.add_argument("--qa-archive-mainline", action="store_true")
     parser.add_argument("--qa-import-file", type=Path)
+    parser.add_argument("--qa-boundary-report", type=Path)
+    parser.add_argument("--qa-boundary-error", action="store_true")
+    parser.add_argument("--qa-execution-dialog", action="store_true")
     parser.add_argument("--qa-runtime-error", action="store_true")
     return parser.parse_args()
 
@@ -3371,6 +3591,34 @@ def main() -> None:
                 )
                 if target is not None:
                     ui.select_task(int(target["id"]))
+            if args.qa_execution_dialog:
+                target = next(iter(ui.db.list_tasks(ui.current_mid)), None)
+                if target is not None:
+                    ui.open_execution_dialog(int(target["id"]))
+            if args.qa_boundary_error:
+                def force_isolated_failure(_event) -> None:
+                    ui.active_index = ui.NAV_CALENDAR
+                    ui.db.conn.execute(
+                        "UPDATE app_settings SET value = value WHERE key = ?",
+                        ("current_mainline_id",),
+                    )
+                    raise RuntimeError("QA isolated interaction failure")
+
+                probe = ft.FilledButton("异常边界探针", on_click=force_isolated_failure)
+                ui._protect_control_tree(probe)
+                probe.on_click(None)
+                await asyncio.sleep(0.5)
+            if args.qa_boundary_report:
+                page.update()
+                await asyncio.sleep(0.3)
+                total, unprotected = ui.interaction_boundary_audit()
+                report_path = args.qa_boundary_report.resolve()
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                report_path.write_text(
+                    f"handlers={total}\nunprotected={len(unprotected)}\n"
+                    + "\n".join(unprotected),
+                    encoding="utf-8",
+                )
             if args.qa_screenshot:
                 qa_title = f"ENTP 自强手册 2.0 · QA · {args.view}"
                 page.title = qa_title

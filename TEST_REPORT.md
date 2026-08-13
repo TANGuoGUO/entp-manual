@@ -2,7 +2,7 @@
 
 测试日期：2026-08-13  
 测试对象：`G:\project\entp` 当前 Flet 2.0 版本  
-结论：**首轮问题、完整导出/导入与日历空日期崩溃修复均已验证。当前 58/58 个自动化测试通过，原生 Flet 空日期页面复核通过。**
+结论：**全部可见功能已接入统一异常边界。当前 65/65 个自动化测试通过，7 类原生 Flet 页面/弹窗共审计到的交互回调遗漏为 0。**
 
 ## 1. 已修复的问题（按优先级）
 
@@ -71,13 +71,14 @@
 
 | 检查 | 结果 |
 |---|---:|
-| 预先设计的场景 | 96 条 |
-| 自动化测试方法 | 58 个（部分方法组合多个场景） |
-| 自动化通过 | 58 |
+| 预先设计的场景 | 103 条 |
+| 自动化测试方法 | 65 个（部分方法组合多个场景） |
+| 自动化通过 | 65 |
 | 失败/预期失败 | 0 |
 | 原有专项回归脚本 | 2/2 通过 |
 | 原生 Flet 状态截图 | 11/11 生成并人工复核 |
 | 实际无窗口启动器 | 1/1 启动、截图、自动退出 |
+| 本轮原生交互边界审计 | 7/7 页面或弹窗，遗漏 0 |
 | Python 编译检查 | 通过 |
 | 正式数据库是否被测试改写 | 否；`entp_manual.db` 修改时间保持 2026-08-13 01:02:21 |
 
@@ -122,6 +123,16 @@
 - 完成后重新打开，历史完成事实仍保留。
 - 同一任务同日完成、重开、再完成：日历任务数仍为 1，事件历史保留两次完成动作。
 - 历史账本显示当日快照；实测 2026-08-12 显示完成 2/3。
+
+### 全功能异常边界
+
+- 页面每次更新前递归扫描页面树和弹窗树，自动包装所有 `on_click`、`on_submit`、`on_change`、`on_blur` 等同步/异步回调。
+- 动态创建的任务详情、主线编辑、灵感详情和弹窗不需要开发者手工逐个记住异常处理。
+- 重复刷新不会重复包装同一回调。
+- 已区分输入校验、SQLite 锁、文件权限、备份校验和未知错误的用户提示。
+- 回调失败时统一回滚尚未提交的 SQLite 事务，并恢复动作前的页面、日期和选中对象状态。
+- 原生故障注入截图确认：提示位于底部，主页面仍完整可用，没有 Flet 错误覆盖层。
+- 原生回调审计：当前主线 39、执行弹窗 63、候审区 14、今日清单 15、完成日历 32、主线编辑 6、导入弹窗 12，均为 `unprotected=0`。
 
 ### 灵感候审与回流
 
@@ -169,13 +180,13 @@ UI 测试没有使用浏览器 DOM 自动化，因为这是原生 Flet 桌面窗
 
 ```powershell
 cd G:\project\entp
-.\.venv\Scripts\python.exe -m py_compile flet_app.py database.py markdown_store.py backup_service.py launcher_flet.pyw tests\test_feature_matrix.py tests\test_backup_restore.py tests\test_calendar_ui_safety.py tests\prepare_ui_qa.py
+.\.venv\Scripts\python.exe -m py_compile flet_app.py database.py markdown_store.py backup_service.py launcher_flet.pyw tests\test_feature_matrix.py tests\test_backup_restore.py tests\test_calendar_ui_safety.py tests\test_ui_exception_boundaries.py tests\prepare_ui_qa.py
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
 .\.venv\Scripts\python.exe -m tests.test_daily_ledger
 .\.venv\Scripts\python.exe -m tests.test_archive_mainline
 ```
 
-自动化套件当前没有 `expectedFailure`，所有 58 个测试均要求正常通过。
+自动化套件当前没有 `expectedFailure`，所有 65 个测试均要求正常通过。
 
 ## 7. 测试证据
 
@@ -183,6 +194,7 @@ cd G:\project\entp
 - 自动化用例：`tests/test_feature_matrix.py`
 - 完整备份用例：`tests/test_backup_restore.py`
 - 日历交互安全用例：`tests/test_calendar_ui_safety.py`
+- 全局交互异常边界用例：`tests/test_ui_exception_boundaries.py`
 - UI 数据准备：`tests/prepare_ui_qa.py`
 - 截图目录：`designs/test-20260813/`
 - 代表截图：
@@ -204,6 +216,7 @@ cd G:\project\entp
   - `outputs/backup-vault-compact-clean.png`
   - `outputs/backup-import-confirm-final.png`
   - `outputs/calendar-empty-safe.png`
+  - `outputs/boundary-error.png`
 
 ## 8. 剩余风险与未完全自动化部分
 
