@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>一次只推进一条主线。新想法先记下来，等需要时再整理。</strong>
+  <strong>一个帮助想法很多、但容易被新鲜感带走的人持续推进事情的 Windows 桌面工具。</strong>
 </p>
 
 <p align="center">
