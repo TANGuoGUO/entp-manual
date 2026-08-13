@@ -14,6 +14,7 @@ if (-not $Iscc) { throw "Inno Setup 6 was not found." }
 Push-Location $ProjectRoot
 try {
     & $Flet pack flet_app.py -n "ENTPManual" --distpath release `
+        --icon "assets\app-icon.ico" `
         --add-data "assets:assets" `
         --product-name "ENTP Manual" `
         --file-description "Curiosity Momentum Loop" `

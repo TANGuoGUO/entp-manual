@@ -627,7 +627,7 @@ class EntpFletApp:
         if not self.tray_available or self._tray_icon is not None:
             return
         try:
-            image = Image.open(RESOURCE_ROOT / "assets" / "profile-cat.png").convert("RGBA")
+            image = Image.open(RESOURCE_ROOT / "assets" / "app-icon.png").convert("RGBA")
             menu = pystray.Menu(
                 pystray.MenuItem("打开 ENTP 自强手册", self._tray_show, default=True),
                 pystray.MenuItem("隐藏窗口", self._tray_hide),
@@ -711,11 +711,16 @@ class EntpFletApp:
             content=ft.Row(
                 [
                     ft.Container(
-                        content=ft.Icon(ft.Icons.BOLT_ROUNDED, size=24, color=ft.Colors.WHITE),
+                        content=ft.Image(
+                            src="app-icon.png",
+                            width=42,
+                            height=42,
+                            fit=ft.BoxFit.COVER,
+                            border_radius=14,
+                        ),
                         width=42,
                         height=42,
                         alignment=ft.Alignment.CENTER,
-                        bgcolor=BLUE,
                         border_radius=14,
                     ),
                     ft.Column(
