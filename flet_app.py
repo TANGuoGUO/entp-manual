@@ -12,6 +12,14 @@ from pathlib import Path
 
 import flet as ft
 
+from backup_service import (
+    BackupError,
+    BackupSummary,
+    default_backup_name,
+    export_workspace,
+    inspect_backup,
+    restore_workspace,
+)
 from database import Database
 from markdown_store import MarkdownStore
 
@@ -83,6 +91,8 @@ class EntpFletApp:
     def __init__(self, page: ft.Page, db_path: Path, initial_view: str = "current") -> None:
         self.page = page
         self._closed = False
+        self.file_picker = ft.FilePicker()
+        self.page.services.append(self.file_picker)
         self.db = Database(db_path)
         markdown_root = (
             ROOT / "markdown"
@@ -276,6 +286,18 @@ class EntpFletApp:
         except Exception:
             self._write_runtime_error("无法显示错误提示", traceback.format_exc())
 
+    def _notify_success(self, message: str) -> None:
+        try:
+            self.page.show_dialog(
+                ft.SnackBar(
+                    content=ft.Text(message, size=14),
+                    bgcolor="#254D38",
+                    duration=6500,
+                )
+            )
+        except Exception:
+            self._write_runtime_error("无法显示成功提示", traceback.format_exc())
+
     def _sync_markdown(self, *, show_error: bool = True) -> bool:
         try:
             self.markdown.sync_all(self.db)
@@ -305,6 +327,23 @@ class EntpFletApp:
             self.db.close()
         except Exception:
             self._write_runtime_error("关闭数据库连接失败", traceback.format_exc())
+
+    def _reopen_workspace(self, database_path: Path, markdown_root: Path) -> None:
+        self.db = Database(database_path)
+        self.markdown = MarkdownStore(markdown_root)
+        self._closed = False
+
+    def _reset_workspace_view_state(self) -> None:
+        self.current_mid = self.db.current_mainline_id()
+        self.today = date.today()
+        self._observed_local_day = self.today
+        self.selected_day = self.today
+        self.calendar_month = self.today.replace(day=1)
+        self.calendar_selected_day = self.today
+        self.selected_task_id = None
+        self.selected_thought_id = None
+        self.selected_mainline_id = None
+        self.inspiration_capture_open = False
 
     def _handle_page_closed(self, _=None) -> None:
         self._close_database()
@@ -1405,7 +1444,7 @@ class EntpFletApp:
         return self._page_shell(
             ft.Column(
                 [
-                    ft.Row(
+                    ft.Column(
                         [
                             ft.Column(
                                 [
@@ -1413,15 +1452,49 @@ class EntpFletApp:
                                     ft.Text("其他主线留在这里，不与正在执行的事情争夺注意力。", size=16, color=MUTED),
                                 ],
                                 spacing=8,
-                                expand=True,
                             ),
-                            ft.FilledButton(
-                                "新建主线",
-                                icon=ft.Icons.ADD_ROUNDED,
-                                on_click=self.open_blank_mainline,
-                                style=ft.ButtonStyle(shape=rounded(13), padding=18, bgcolor=INK, color=ft.Colors.WHITE),
+                            ft.Row(
+                                [
+                                    ft.OutlinedButton(
+                                        "导出全部",
+                                        icon=ft.Icons.DOWNLOAD_ROUNDED,
+                                        tooltip="导出数据库、全部 Markdown 和历史记录",
+                                        on_click=self.export_all_data,
+                                        style=ft.ButtonStyle(
+                                            shape=rounded(13),
+                                            padding=16,
+                                            side=ft.BorderSide(1, LINE),
+                                            color=INK,
+                                        ),
+                                    ),
+                                    ft.OutlinedButton(
+                                        "导入备份",
+                                        icon=ft.Icons.UPLOAD_FILE_ROUNDED,
+                                        tooltip="校验完整备份后恢复整个工作空间",
+                                        on_click=self.choose_import_backup,
+                                        style=ft.ButtonStyle(
+                                            shape=rounded(13),
+                                            padding=16,
+                                            side=ft.BorderSide(1, LINE),
+                                            color=INK,
+                                        ),
+                                    ),
+                                    ft.FilledButton(
+                                        "新建主线",
+                                        icon=ft.Icons.ADD_ROUNDED,
+                                        on_click=self.open_blank_mainline,
+                                        style=ft.ButtonStyle(
+                                            shape=rounded(13),
+                                            padding=18,
+                                            bgcolor=INK,
+                                            color=ft.Colors.WHITE,
+                                        ),
+                                    ),
+                                ],
+                                spacing=8,
                             ),
-                        ]
+                        ],
+                        spacing=16,
                     ),
                     self.vault_holder,
                 ],
@@ -2802,6 +2875,214 @@ class EntpFletApp:
     def _close_dialog(self) -> None:
         self.page.pop_dialog()
 
+    async def export_all_data(self, _=None) -> None:
+        if not self._sync_markdown():
+            return
+        try:
+            selected_path = await self.file_picker.save_file(
+                dialog_title="导出 ENTP 完整备份",
+                file_name=default_backup_name(),
+                file_type=ft.FilePickerFileType.CUSTOM,
+                allowed_extensions=["zip"],
+            )
+            if not selected_path:
+                return
+            target = Path(selected_path)
+            if target.suffix.lower() != ".zip":
+                target = target.with_name(f"{target.name}.entp.zip")
+            summary = export_workspace(self.db, self.markdown.root, target)
+        except BackupError as error:
+            self._write_runtime_error("导出完整备份失败", traceback.format_exc())
+            self._notify_error(str(error))
+            return
+        except Exception as error:
+            self._write_runtime_error("导出完整备份发生意外错误", traceback.format_exc())
+            self._notify_error(f"无法导出完整备份：{error}")
+            return
+        self._notify_success(
+            f"完整备份已保存：{summary.mainlines} 条主线、{summary.tasks} 个任务、"
+            f"{summary.thoughts} 条灵感、{summary.markdown_files} 个 Markdown。\n"
+            f"{summary.archive_path}"
+        )
+
+    async def choose_import_backup(self, _=None) -> None:
+        try:
+            files = await self.file_picker.pick_files(
+                dialog_title="选择 ENTP 完整备份",
+                file_type=ft.FilePickerFileType.CUSTOM,
+                allowed_extensions=["zip"],
+                allow_multiple=False,
+            )
+            if not files:
+                return
+            selected_path = getattr(files[0], "path", None)
+            if not selected_path:
+                raise BackupError("无法读取所选文件的本地路径")
+            archive_path = Path(selected_path).resolve()
+            summary = inspect_backup(archive_path)
+        except BackupError as error:
+            self._write_runtime_error("检查导入备份失败", traceback.format_exc())
+            self._notify_error(str(error))
+            return
+        except Exception as error:
+            self._write_runtime_error("选择导入备份发生意外错误", traceback.format_exc())
+            self._notify_error(f"无法读取这个备份：{error}")
+            return
+        self.show_import_confirmation(archive_path, summary)
+
+    def show_import_confirmation(
+        self, archive_path: Path, summary: BackupSummary
+    ) -> None:
+        created_at = summary.created_at.replace("T", " ")[:19] or "未知时间"
+
+        async def confirm_import(_) -> None:
+            await self.confirm_import_backup(archive_path)
+
+        self.page.show_dialog(
+            ft.AlertDialog(
+                modal=True,
+                title=ft.Row(
+                    [
+                        ft.Container(
+                            ft.Icon(ft.Icons.RESTORE_ROUNDED, size=25, color=BLUE),
+                            width=46,
+                            height=46,
+                            alignment=ft.Alignment.CENTER,
+                            bgcolor=BLUE_SOFT,
+                            border_radius=14,
+                        ),
+                        ft.Column(
+                            [
+                                ft.Text("恢复完整工作空间", size=22, weight=ft.FontWeight.W_700),
+                                ft.Text("备份已通过完整性与安全校验", size=13, color=GREEN),
+                            ],
+                            spacing=2,
+                        ),
+                    ],
+                    spacing=12,
+                ),
+                content=ft.Column(
+                    [
+                        ft.Container(
+                            content=ft.ResponsiveRow(
+                                [
+                                    self._backup_stat("主线", summary.mainlines),
+                                    self._backup_stat("任务", summary.tasks),
+                                    self._backup_stat("灵感", summary.thoughts),
+                                    self._backup_stat("Markdown", summary.markdown_files),
+                                ],
+                                spacing=8,
+                                run_spacing=8,
+                            ),
+                            padding=14,
+                            bgcolor="#F7F8FB",
+                            border_radius=15,
+                        ),
+                        ft.Text(f"备份时间：{created_at}", size=13, color=MUTED),
+                        ft.Text(
+                            f"文件：{archive_path.name}",
+                            size=13,
+                            color=MUTED,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                        ),
+                        ft.Container(
+                            content=ft.Row(
+                                [
+                                    ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, size=20, color=AMBER),
+                                    ft.Text(
+                                        "导入会整体替换当前数据，不会把两份任务混在一起。\n"
+                                        "开始前会自动导出一份当前工作空间，可随时恢复。",
+                                        size=14,
+                                        color="#59451D",
+                                        expand=True,
+                                    ),
+                                ],
+                                spacing=10,
+                            ),
+                            padding=14,
+                            bgcolor=AMBER_SOFT,
+                            border_radius=14,
+                        ),
+                    ],
+                    width=590,
+                    spacing=14,
+                    tight=True,
+                ),
+                actions=[
+                    ft.TextButton("取消", on_click=lambda _: self._close_dialog()),
+                    ft.FilledButton(
+                        "自动备份并导入",
+                        icon=ft.Icons.RESTORE_ROUNDED,
+                        on_click=confirm_import,
+                        style=ft.ButtonStyle(
+                            shape=rounded(12),
+                            padding=16,
+                            bgcolor=BLUE,
+                            color=ft.Colors.WHITE,
+                        ),
+                    ),
+                ],
+                shape=rounded(22),
+            )
+        )
+
+    @staticmethod
+    def _backup_stat(label: str, value: int) -> ft.Container:
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text(str(value), size=20, weight=ft.FontWeight.W_700, color=INK),
+                    ft.Text(label, size=12, color=MUTED),
+                ],
+                spacing=1,
+            ),
+            padding=ft.Padding.symmetric(horizontal=12, vertical=9),
+            bgcolor=SURFACE,
+            border_radius=12,
+            col={ft.ResponsiveRowBreakpoint.XS: 6, ft.ResponsiveRowBreakpoint.SM: 3},
+        )
+
+    async def confirm_import_backup(self, archive_path: Path) -> None:
+        self._close_dialog()
+        if not self._sync_markdown():
+            return
+        database_path = self.db.path.resolve()
+        markdown_root = self.markdown.root.resolve()
+        safety_dir = ROOT / "backups"
+        safety_path = safety_dir / (
+            f"导入前自动备份_{datetime.now():%Y%m%d_%H%M%S}.entp.zip"
+        )
+        safety_created = False
+        try:
+            export_workspace(self.db, markdown_root, safety_path)
+            safety_created = True
+            self._close_database()
+            restore_workspace(archive_path, database_path, markdown_root)
+            self._reopen_workspace(database_path, markdown_root)
+            self._reset_workspace_view_state()
+            self._sync_markdown(show_error=False)
+            self.show_view(self.NAV_CURRENT)
+        except Exception as error:
+            self._write_runtime_error("导入完整备份失败", traceback.format_exc())
+            if self._closed:
+                try:
+                    self._reopen_workspace(database_path, markdown_root)
+                    self._reset_workspace_view_state()
+                    self.show_view(self.NAV_VAULT)
+                except Exception:
+                    self._write_runtime_error("导入失败后重新连接工作空间失败", traceback.format_exc())
+            message = str(error) if isinstance(error, BackupError) else f"导入失败：{error}"
+            recovery_note = (
+                f"。当前数据的安全备份位于：{safety_path}"
+                if safety_created
+                else "。当前数据没有被替换"
+            )
+            self._notify_error(f"{message}{recovery_note}")
+            return
+        self._notify_success(
+            f"完整工作空间已恢复。导入前的数据也已保存在：{safety_path}"
+        )
+
     def open_execution_dialog(self, task_id: int) -> None:
         action = ft.TextField(label="我实际做了什么", autofocus=True, multiline=True, min_lines=2, max_lines=4, text_size=15, border_radius=12)
         result = ft.TextField(label="产生了什么结果 / 发现", multiline=True, min_lines=2, max_lines=4, text_size=15, border_radius=12)
@@ -2921,6 +3202,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qa-idea-detail", action="store_true")
     parser.add_argument("--qa-mainline-editor", action="store_true")
     parser.add_argument("--qa-archive-mainline", action="store_true")
+    parser.add_argument("--qa-import-file", type=Path)
     parser.add_argument("--qa-runtime-error", action="store_true")
     return parser.parse_args()
 
@@ -2979,8 +3261,13 @@ def main() -> None:
                 await asyncio.sleep(1.0)
             if args.view == "vault":
                 await asyncio.sleep(0.6)
-                ui.show_view(ui.NAV_VAULT)
-                if args.qa_mainline_editor:
+                if args.qa_import_file:
+                    archive_path = args.qa_import_file.resolve()
+                    ui.show_import_confirmation(
+                        archive_path,
+                        inspect_backup(archive_path),
+                    )
+                elif args.qa_mainline_editor:
                     ui.open_blank_mainline()
                 elif args.qa_archive_mainline:
                     current_id = ui.db.current_mainline_id()

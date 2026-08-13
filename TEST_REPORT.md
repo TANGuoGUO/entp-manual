@@ -2,7 +2,7 @@
 
 测试日期：2026-08-13  
 测试对象：`G:\project\entp` 当前 Flet 2.0 版本  
-结论：**首轮测试发现的 2 个 P0、2 个 P1 和 2 个 P2 问题均已在 2026-08-13 修复。修复后 48/48 个自动化测试通过，原生 Flet 宽窄屏和实际启动器复核通过。**
+结论：**首轮问题与完整导出/导入功能均已验证。当前 56/56 个自动化测试通过，完整备份往返、损坏包拒绝、恢复中断回滚、导入前自动备份和 Flet 原生界面复核通过。**
 
 ## 1. 已修复的问题（按优先级）
 
@@ -71,9 +71,9 @@
 
 | 检查 | 结果 |
 |---|---:|
-| 预先设计的场景 | 83 条 |
-| 自动化测试方法 | 48 个（部分方法组合多个场景） |
-| 自动化通过 | 48 |
+| 预先设计的场景 | 95 条 |
+| 自动化测试方法 | 56 个（部分方法组合多个场景） |
+| 自动化通过 | 56 |
 | 失败/预期失败 | 0 |
 | 原有专项回归脚本 | 2/2 通过 |
 | 原生 Flet 状态截图 | 11/11 生成并人工复核 |
@@ -98,6 +98,16 @@
 - 今日快速任务进入收集箱和当天账本。
 - 任务改名不会覆盖历史账本的标题和主线快照。
 - 过期项只出现在过期区；顺延后旧项为 carried、今天生成 planned 项。
+
+### 完整导出与导入
+
+- 使用 SQLite 在线备份产生一致快照，运行中的程序无需先关闭。
+- 一个 `.entp.zip` 同时包含 12 张业务表、全部 Markdown、版本信息、表计数、文件大小和 SHA-256 校验。
+- 完整往返可恢复主线、任务、每日账本、完成事件、灵感关系、执行记录、设置和用户自由正文。
+- 损坏内容、未来格式版本、缺少清单和不安全路径均在替换当前数据前被拒绝。
+- 恢复过程中强制制造 Markdown 安装失败，数据库和 Markdown 都能回到导入前状态。
+- 确认导入时先在 `backups/` 生成当前工作空间的安全备份；恢复后数据库重新连接并回到当前主线。
+- 原生界面已复核宽屏导入摘要弹窗与 920 × 720 窄屏保管箱入口。
 - 重复顺延不会重复创建；批量顺延已有今日项时仍保持 `(日期, 任务)` 唯一。
 - 模拟跨日刷新后，旧日期账本保持不变，`is_today` 派生到新日期。
 - 非法日期会明确失败；空日期查询安全返回。
@@ -155,18 +165,19 @@ UI 测试没有使用浏览器 DOM 自动化，因为这是原生 Flet 桌面窗
 
 ```powershell
 cd G:\project\entp
-.\.venv\Scripts\python.exe -m py_compile flet_app.py database.py markdown_store.py launcher_flet.pyw tests\test_feature_matrix.py tests\prepare_ui_qa.py
+.\.venv\Scripts\python.exe -m py_compile flet_app.py database.py markdown_store.py backup_service.py launcher_flet.pyw tests\test_feature_matrix.py tests\test_backup_restore.py tests\prepare_ui_qa.py
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
 .\.venv\Scripts\python.exe -m tests.test_daily_ledger
 .\.venv\Scripts\python.exe -m tests.test_archive_mainline
 ```
 
-自动化套件当前没有 `expectedFailure`，所有 48 个测试均要求正常通过。
+自动化套件当前没有 `expectedFailure`，所有 56 个测试均要求正常通过。
 
 ## 7. 测试证据
 
 - 测试计划：`TEST_PLAN.md`
 - 自动化用例：`tests/test_feature_matrix.py`
+- 完整备份用例：`tests/test_backup_restore.py`
 - UI 数据准备：`tests/prepare_ui_qa.py`
 - 截图目录：`designs/test-20260813/`
 - 代表截图：
@@ -185,6 +196,8 @@ cd G:\project\entp
   - `fixed-runtime-error.png`
   - `fixed-vault-new-mainline.png`
   - `fixed-launcher-startup.png`
+  - `outputs/backup-vault-compact-clean.png`
+  - `outputs/backup-import-confirm-final.png`
 
 ## 8. 剩余风险与未完全自动化部分
 
@@ -192,5 +205,6 @@ cd G:\project\entp
 - 没有真实耗尽磁盘或修改系统目录权限；使用可控的中断写入模拟。
 - 没有调用系统默认 Markdown 应用，以免产生不可控外部窗口；相关代码缺少异常处理，已列风险。
 - 没有完成屏幕阅读器、键盘全路径和高 DPI 多显示器人工无障碍测试。
+- 系统原生“保存文件 / 选择文件”窗口需要人工点击；自动化从选择后的备份校验、确认、自动安全备份到重新连接均已覆盖。
 - “刷新闪烁”只通过 180 ms AnimatedSwitcher 配置和多次启动截图检查，没有高帧率录屏量化。
 - 历史 `logs/flet-startup-error.log` 中留有 2026-08-13 00:54 的旧版 `Container(min_height=...)` 错误；本轮当前代码 12 次窗口启动均成功，该日志不是本轮新失败，但日志策略应加入时间/会话分隔，避免误判。
