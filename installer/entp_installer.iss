@@ -27,7 +27,7 @@ RestartApplications=no
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: unchecked
-Name: "autostart"; Description: "登录 Windows 后自动启动（使用任务计划程序）"; GroupDescription: "自动启动："; Flags: unchecked
+Name: "autostart"; Description: "登录 Windows 后在后台启动（隐藏任务栏图标，使用任务计划程序）"; GroupDescription: "自动启动："; Flags: unchecked
 
 [Files]
 Source: "..\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
@@ -46,6 +46,60 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""{#MyTaskName}"""; 
 Type: filesandordirs; Name: "{app}"
 
 [Code]
+function XmlEscape(Value: String): String;
+begin
+  StringChangeEx(Value, '&', '&amp;', True);
+  StringChangeEx(Value, '<', '&lt;', True);
+  StringChangeEx(Value, '>', '&gt;', True);
+  StringChangeEx(Value, '"', '&quot;', True);
+  StringChangeEx(Value, '''', '&apos;', True);
+  Result := Value;
+end;
+
+function CreateAutostartTask(var ResultCode: Integer): Boolean;
+var
+  DomainName: String;
+  UserName: String;
+  UserId: String;
+  ExePath: String;
+  XmlPath: String;
+  TaskXml: String;
+begin
+  DomainName := GetEnv('USERDOMAIN');
+  UserName := GetEnv('USERNAME');
+  if DomainName <> '' then
+    UserId := DomainName + '\' + UserName
+  else
+    UserId := UserName;
+
+  ExePath := ExpandConstant('{app}\{#MyAppExeName}');
+  XmlPath := ExpandConstant('{tmp}\ENTPManual_Autostart.xml');
+  TaskXml :=
+    '<?xml version="1.0" encoding="UTF-8"?>' + #13#10 +
+    '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">' + #13#10 +
+    '  <RegistrationInfo><Description>Start ENTP Manual hidden after Windows logon.</Description></RegistrationInfo>' + #13#10 +
+    '  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>' + XmlEscape(UserId) + '</UserId></LogonTrigger></Triggers>' + #13#10 +
+    '  <Principals><Principal id="Author"><UserId>' + XmlEscape(UserId) + '</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>' + #13#10 +
+    '  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>false</Hidden><RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>false</WakeToRun><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><Priority>7</Priority></Settings>' + #13#10 +
+    '  <Actions Context="Author"><Exec><Command>' + XmlEscape(ExePath) + '</Command><Arguments>--start-hidden</Arguments></Exec></Actions>' + #13#10 +
+    '</Task>' + #13#10;
+
+  if not SaveStringToFile(XmlPath, UTF8Encode(TaskXml), False) then
+  begin
+    ResultCode := -1;
+    Result := False;
+    Exit;
+  end;
+
+  Result := Exec(
+    ExpandConstant('{sys}\schtasks.exe'),
+    '/Create /F /TN "{#MyTaskName}" /XML "' + XmlPath + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode
+  );
+  DeleteFile(XmlPath);
+  Result := Result and (ResultCode = 0);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
@@ -54,11 +108,7 @@ begin
   begin
     if WizardIsTaskSelected('autostart') then
     begin
-      if (not Exec(
-        ExpandConstant('{sys}\schtasks.exe'),
-        ExpandConstant('/Create /F /TN "{#MyTaskName}" /SC ONLOGON /TR "{app}\{#MyAppExeName}" /RL LIMITED'),
-        '', SW_HIDE, ewWaitUntilTerminated, ResultCode
-      )) or (ResultCode <> 0) then
+      if not CreateAutostartTask(ResultCode) then
       begin
         Log(Format('Failed to create autostart task. Exit code: %d', [ResultCode]));
         MsgBox('程序已经安装成功，但登录后自动启动任务创建失败。你仍然可以从开始菜单手动启动程序。', mbError, MB_OK);

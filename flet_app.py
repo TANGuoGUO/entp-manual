@@ -15,6 +15,13 @@ from pathlib import Path
 
 import flet as ft
 
+try:
+    import pystray
+    from PIL import Image
+except ImportError:  # Keep the app usable if an older environment lacks tray support.
+    pystray = None
+    Image = None
+
 from backup_service import (
     BackupError,
     BackupSummary,
@@ -102,9 +109,21 @@ class EntpFletApp:
     NAV_TODAY = 3
     NAV_CALENDAR = 4
 
-    def __init__(self, page: ft.Page, db_path: Path, initial_view: str = "current") -> None:
+    def __init__(
+        self,
+        page: ft.Page,
+        db_path: Path,
+        initial_view: str = "current",
+        *,
+        start_hidden: bool = False,
+    ) -> None:
         self.page = page
         self._closed = False
+        self._exiting = False
+        self._tray_icon = None
+        self._tray_hint_shown = False
+        self.tray_available = pystray is not None and Image is not None
+        self.start_hidden = start_hidden
         self._original_page_update = page.update
         self.page.update = self._protected_page_update
         self.file_picker = ft.FilePicker()
@@ -257,6 +276,9 @@ class EntpFletApp:
             "calendar": self.NAV_CALENDAR,
         }
         self.show_view(initial_views.get(initial_view, self.NAV_CURRENT))
+        self._start_tray()
+        if self.start_hidden and self.tray_available:
+            self.page.run_task(self._hide_window)
 
     def _configure_page(self) -> None:
         self.page.title = "ENTP 自强手册 2.0"
@@ -274,6 +296,8 @@ class EntpFletApp:
             "页面断开时释放数据库失败",
         )
         self.page.window.prevent_close = True
+        self.page.window.visible = not self.start_hidden
+        self.page.window.skip_task_bar = self.start_hidden
         self.page.window.on_event = self._wrap_event_handler(
             self._handle_window_event,
             "处理窗口事件失败",
@@ -587,12 +611,98 @@ class EntpFletApp:
         self.inspiration_capture_open = False
 
     def _handle_page_closed(self, _=None) -> None:
+        self._stop_tray()
         self._close_database()
 
     async def _handle_window_event(self, event) -> None:
         if event.type == ft.WindowEventType.CLOSE:
-            self._close_database()
-            await self.page.window.destroy()
+            if self.tray_available and not self._exiting:
+                await self._hide_window()
+            else:
+                await self._exit_application()
+
+    def _start_tray(self) -> None:
+        if not self.tray_available or self._tray_icon is not None:
+            return
+        try:
+            image = Image.open(RESOURCE_ROOT / "assets" / "profile-cat.png").convert("RGBA")
+            menu = pystray.Menu(
+                pystray.MenuItem("打开 ENTP 自强手册", self._tray_show, default=True),
+                pystray.MenuItem("隐藏窗口", self._tray_hide),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("退出", self._tray_exit),
+            )
+            self._tray_icon = pystray.Icon(
+                "ENTPManual",
+                image,
+                "ENTP 自强手册",
+                menu,
+            )
+            self._tray_icon.run_detached()
+        except Exception:
+            self._tray_icon = None
+            self.tray_available = False
+            self._write_runtime_error("启动系统托盘失败", traceback.format_exc())
+
+    def _stop_tray(self) -> None:
+        icon = self._tray_icon
+        self._tray_icon = None
+        if icon is None:
+            return
+        try:
+            icon.stop()
+        except Exception:
+            self._write_runtime_error("关闭系统托盘失败", traceback.format_exc())
+
+    def _run_tray_task(self, handler) -> None:
+        try:
+            self.page.run_task(handler)
+        except Exception:
+            self._write_runtime_error("调度系统托盘动作失败", traceback.format_exc())
+
+    def _tray_show(self, _icon=None, _item=None) -> None:
+        self._run_tray_task(self._show_window)
+
+    def _tray_hide(self, _icon=None, _item=None) -> None:
+        self._run_tray_task(self._hide_window)
+
+    def _tray_exit(self, _icon=None, _item=None) -> None:
+        self._run_tray_task(self._exit_application)
+
+    def hide_to_tray(self, _=None) -> None:
+        if not self.tray_available:
+            self._notify_error("当前环境没有可用的系统托盘支持")
+            return
+        self.page.run_task(self._hide_window)
+
+    async def _hide_window(self) -> None:
+        self.page.window.skip_task_bar = True
+        self.page.window.visible = False
+        self.page.update()
+        if self._tray_icon is not None and not self._tray_hint_shown:
+            self._tray_hint_shown = True
+            try:
+                self._tray_icon.notify(
+                    "程序仍在后台运行。双击托盘图标可以恢复窗口。",
+                    "ENTP 自强手册",
+                )
+            except Exception:
+                self._write_runtime_error("显示托盘提示失败", traceback.format_exc())
+
+    async def _show_window(self) -> None:
+        self.page.window.visible = True
+        self.page.window.skip_task_bar = False
+        self.page.window.focused = True
+        self.page.update()
+        await self.page.window.to_front()
+
+    async def _exit_application(self) -> None:
+        if self._exiting:
+            return
+        self._exiting = True
+        self._stop_tray()
+        self._close_database()
+        await self.page.window.destroy()
 
     def _build_rail(self) -> ft.NavigationRail:
         brand = ft.Container(
@@ -667,6 +777,18 @@ class EntpFletApp:
                 content=ft.Column(
                     [
                         ft.Divider(height=1, color=LINE),
+                        *(
+                            [
+                                ft.TextButton(
+                                    "隐藏到托盘",
+                                    icon=ft.Icons.VISIBILITY_OFF_OUTLINED,
+                                    on_click=self.hide_to_tray,
+                                    tooltip="隐藏任务栏图标；从系统托盘恢复",
+                                )
+                            ]
+                            if self.tray_available
+                            else []
+                        ),
                         ft.Row(
                             [
                                 ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, size=19, color=MUTED),
@@ -3477,6 +3599,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qa-execution-dialog", action="store_true")
     parser.add_argument("--qa-e2e-report", type=Path)
     parser.add_argument("--qa-runtime-error", action="store_true")
+    parser.add_argument("--qa-window-state-report", type=Path)
+    parser.add_argument("--start-hidden", action="store_true")
     return parser.parse_args()
 
 
@@ -3523,7 +3647,26 @@ def main() -> None:
         try:
             import asyncio
 
-            ui = EntpFletApp(page, args.db.resolve(), args.view)
+            ui = EntpFletApp(
+                page,
+                args.db.resolve(),
+                args.view,
+                start_hidden=args.start_hidden,
+            )
+            if args.qa_window_state_report:
+                import asyncio
+
+                await asyncio.sleep(0.5)
+                report_path = args.qa_window_state_report.resolve()
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                report_path.write_text(
+                    f"visible={page.window.visible}\n"
+                    f"skip_task_bar={page.window.skip_task_bar}\n"
+                    f"tray_available={ui.tray_available}\n",
+                    encoding="utf-8",
+                )
+                await ui._exit_application()
+                return
             if args.qa_compact:
                 page.window.maximized = False
                 page.update()
@@ -3661,7 +3804,7 @@ def main() -> None:
                 target = args.qa_screenshot.resolve()
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(await page.take_screenshot(pixel_ratio=1.0))
-                await page.window.close()
+                await ui._exit_application()
         except Exception:
             import traceback
 
