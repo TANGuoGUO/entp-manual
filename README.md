@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>一款用来记录新灵感、推进当前主线的 Windows 桌面工具。</strong>
+  <strong>一个拯救 ENTP 注意力的管理工具。</strong>
 </p>
 
 <p align="center">
