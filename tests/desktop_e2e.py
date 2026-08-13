@@ -257,13 +257,12 @@ class DesktopE2ERunner:
             if isinstance(control, ft.TextField) and bool(control.multiline)
         )
         tag = _find(root, ft.TextField, hint_text="＋ 添加标签")
-        dropdown = _find(root, ft.Dropdown, label="状态")
         title.value = "E2E 已审视灵感"
         raw.value = "自由正文，没有预设问题。"
         tag.value = "产品,好奇心"
         tag.on_submit(SimpleNamespace(control=tag))
-        dropdown.value = "待孵化"
-        dropdown.on_select(SimpleNamespace(control=dropdown))
+        hatch = _find(root, ft.IconButton, tooltip="孵化")
+        hatch.on_click(SimpleNamespace(control=hatch))
         saved = self.ui.db.get_thought(thought_id)
         assert saved["title"] == "E2E 已审视灵感"
         assert saved["status"] == "待孵化"
@@ -413,6 +412,58 @@ class DesktopE2ERunner:
         assert self.ui.quick_task_input in set(_walk(self.ui.content_switcher.content))
         return "备份、新建主线和对象 Markdown 入口在实际页面可发现"
 
+    def _idea_archive_recycle_bin(self) -> str:
+        thought_id = self.ui.db.create_thought("E2E 回收站灵感")
+        self.ui.show_view(self.ui.NAV_IDEAS)
+        board = self.ui.content_switcher.content
+        matching_cards = [
+            control
+            for control in _walk(board)
+            if isinstance(control, ft.Container)
+            and any(
+                isinstance(child, ft.Text) and child.value == "E2E 回收站灵感"
+                for child in _walk(control)
+            )
+            and any(
+                isinstance(child, ft.IconButton) and child.tooltip == "归档"
+                for child in _walk(control)
+            )
+        ]
+        card = min(matching_cards, key=lambda control: sum(1 for _ in _walk(control)))
+        archive = _find(card, ft.IconButton, tooltip="归档")
+        archive.on_click(SimpleNamespace(control=archive))
+        assert self.ui.db.get_thought(thought_id)["status"] == "已归档"
+        assert not any(
+            isinstance(control, ft.Text) and control.value == "E2E 回收站灵感"
+            for control in _walk(self.ui.content_switcher.content)
+        )
+
+        archived_entry = next(
+            control
+            for control in _walk(self.ui.content_switcher.content)
+            if isinstance(control, ft.TextButton)
+            and str(control.content or "").startswith("已归档")
+        )
+        archived_entry.on_click(SimpleNamespace(control=archived_entry))
+        archive_view = self.ui.content_switcher.content
+        card = next(
+            control
+            for control in _walk(archive_view)
+            if isinstance(control, ft.Row)
+            and any(
+                isinstance(child, ft.Text) and child.value == "E2E 回收站灵感"
+                for child in _walk(control)
+            )
+            and any(
+                isinstance(child, ft.OutlinedButton) and child.content == "恢复"
+                for child in _walk(control)
+            )
+        )
+        restore = _find(card, ft.OutlinedButton, content="恢复")
+        restore.on_click(SimpleNamespace(control=restore))
+        assert self.ui.db.get_thought(thought_id)["status"] == "未审视"
+        return "灵感一键归档后离开候审看板，并可从独立回收站一键恢复"
+
     def _optional_defaults_contract(self) -> str:
         mainline_id = self.ui.db.create_mainline("E2E 无压力默认主线")
         row = next(item for item in self.ui.db.list_mainlines() if int(item["id"]) == mainline_id)
@@ -449,6 +500,7 @@ class DesktopE2ERunner:
         await self.case("E2E-15", "今日排序与分组折叠", self._today_sort_and_collapse)
         await self.case("E2E-16", "空输入边界", self._empty_input_guards)
         await self.case("E2E-17", "可发现的核心入口", self._visible_entry_points)
+        await self.case("E2E-18", "灵感归档回收站", self._idea_archive_recycle_bin)
         await self.case(
             "DC-03",
             "可选期限与复盘默认值",

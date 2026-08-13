@@ -157,6 +157,7 @@ class EntpFletApp:
         self.selected_task_id: int | None = None
         self.selected_thought_id: int | None = None
         self.selected_mainline_id: int | None = None
+        self.idea_archive_open = False
         self.inspiration_capture_open = False
         self.inline_inspiration_input = ft.TextField(
             hint_text="记下灵感，按回车收起",
@@ -608,6 +609,7 @@ class EntpFletApp:
         self.selected_task_id = None
         self.selected_thought_id = None
         self.selected_mainline_id = None
+        self.idea_archive_open = False
         self.inspiration_capture_open = False
 
     def _handle_page_closed(self, _=None) -> None:
@@ -824,6 +826,8 @@ class EntpFletApp:
         elif index == self.NAV_IDEAS:
             if self.selected_thought_id is not None:
                 view = self._idea_review_view(self.selected_thought_id)
+            elif self.idea_archive_open:
+                view = self._ideas_archive_view()
             else:
                 self.idea_board_control = self._ideas_board_view()
                 view = self.idea_board_control
@@ -1361,6 +1365,38 @@ class EntpFletApp:
         }
         return specs.get(status, specs["未审视"])
 
+    def _set_idea_status(self, thought_id: int, status: str) -> None:
+        self.db.set_thought_stage(thought_id, status)
+        self._sync_markdown()
+        if status == "已归档":
+            self.selected_thought_id = None
+            self.idea_archive_open = False
+        self.show_view(self.NAV_IDEAS)
+
+    def _idea_status_actions(self, thought_id: int, current_status: str) -> ft.Row:
+        actions = (
+            ("待孵化", "孵化", ft.Icons.EGG_ALT_OUTLINED, AMBER),
+            ("正在尝试", "尝试", ft.Icons.SCIENCE_OUTLINED, GREEN),
+            ("已归档", "归档", ft.Icons.ARCHIVE_OUTLINED, "#8B9099"),
+        )
+        return ft.Row(
+            [
+                ft.IconButton(
+                    icon,
+                    tooltip=label,
+                    icon_size=18,
+                    icon_color=ft.Colors.WHITE if current_status == status else color,
+                    bgcolor=color if current_status == status else ft.Colors.TRANSPARENT,
+                    disabled=current_status == status,
+                    on_click=lambda _, target=status: self._set_idea_status(thought_id, target),
+                    style=ft.ButtonStyle(shape=rounded(9)),
+                )
+                for status, label, icon, color in actions
+            ],
+            spacing=2,
+            tight=True,
+        )
+
     def _idea_card(self, thought) -> ft.Control:
         thought_id = int(thought["id"])
         status = str(thought["status"] or "未审视")
@@ -1389,6 +1425,7 @@ class EntpFletApp:
             ]
         )
         body.append(ft.Row(footer, spacing=6))
+        body.append(self._idea_status_actions(thought_id, status))
         return ft.Container(
             content=ft.Column(body, spacing=10),
             padding=15,
@@ -1403,12 +1440,14 @@ class EntpFletApp:
 
     def _ideas_board_view(self) -> ft.Container:
         thoughts = self.db.list_thoughts()
-        stages = ("未审视", "待孵化", "正在尝试", "已归档")
+        active_thoughts = [t for t in thoughts if str(t["status"]) != "已归档"]
+        archived_count = len(thoughts) - len(active_thoughts)
+        stages = ("未审视", "待孵化", "正在尝试")
         stage_height = max(360, min(620, float(self.page.height or 760) - 250))
         stage_columns: list[ft.Control] = []
         for status in stages:
             label, color, icon = self._idea_stage_spec(status)
-            items = [t for t in thoughts if str(t["status"]) == status]
+            items = [t for t in active_thoughts if str(t["status"]) == status]
             cards: list[ft.Control] = [self._idea_card(t) for t in items]
             if not cards:
                 cards.append(
@@ -1442,9 +1481,9 @@ class EntpFletApp:
                         ft.ResponsiveRowBreakpoint.XS: 12,
                         ft.ResponsiveRowBreakpoint.SM: 12,
                         ft.ResponsiveRowBreakpoint.MD: 6,
-                        ft.ResponsiveRowBreakpoint.LG: 3,
-                        ft.ResponsiveRowBreakpoint.XL: 3,
-                        ft.ResponsiveRowBreakpoint.XXL: 3,
+                        ft.ResponsiveRowBreakpoint.LG: 4,
+                        ft.ResponsiveRowBreakpoint.XL: 4,
+                        ft.ResponsiveRowBreakpoint.XXL: 4,
                     },
                     padding=14,
                     bgcolor="#F8F9FB",
@@ -1500,6 +1539,12 @@ class EntpFletApp:
                                     padding=ft.Padding.symmetric(horizontal=17, vertical=13),
                                 ),
                             ),
+                            ft.TextButton(
+                                f"已归档 {archived_count}",
+                                icon=ft.Icons.ARCHIVE_OUTLINED,
+                                tooltip="像回收站一样查看或恢复已归档灵感",
+                                on_click=lambda _: self.open_ideas_archive(),
+                            ),
                         ],
                         vertical_alignment=ft.CrossAxisAlignment.END,
                     ),
@@ -1511,6 +1556,97 @@ class EntpFletApp:
                     ),
                 ],
                 spacing=20,
+                scroll=ft.ScrollMode.AUTO,
+            )
+        )
+
+    def open_ideas_archive(self) -> None:
+        self.selected_thought_id = None
+        self.idea_archive_open = True
+        self.show_view(self.NAV_IDEAS)
+
+    def close_ideas_archive(self) -> None:
+        self.idea_archive_open = False
+        self.show_view(self.NAV_IDEAS)
+
+    def _restore_archived_idea(self, thought_id: int) -> None:
+        self.db.set_thought_stage(thought_id, "未审视", note="从已归档恢复")
+        self._sync_markdown()
+        self.idea_archive_open = True
+        self.show_view(self.NAV_IDEAS)
+
+    def _archived_idea_card(self, thought) -> ft.Control:
+        thought_id = int(thought["id"])
+        return ft.Container(
+            content=ft.Row(
+                [
+                    ft.Icon(ft.Icons.ARCHIVE_OUTLINED, color="#8B9099", size=20),
+                    ft.Column(
+                        [
+                            ft.Text(str(thought["title"]), size=16, weight=ft.FontWeight.W_700, color=INK),
+                            ft.Text(str(thought["created_at"] or "")[:16], size=12, color=MUTED),
+                        ],
+                        spacing=4,
+                        expand=True,
+                    ),
+                    ft.IconButton(
+                        ft.Icons.VISIBILITY_OUTLINED,
+                        tooltip="查看内容",
+                        on_click=lambda _, tid=thought_id: self.open_thought_review(tid),
+                    ),
+                    ft.OutlinedButton(
+                        "恢复",
+                        icon=ft.Icons.RESTORE_ROUNDED,
+                        tooltip="恢复到未审视",
+                        on_click=lambda _, tid=thought_id: self._restore_archived_idea(tid),
+                        style=ft.ButtonStyle(shape=rounded(11)),
+                    ),
+                ],
+                spacing=10,
+            ),
+            padding=16,
+            bgcolor=SURFACE,
+            border=ft.Border.all(1, LINE),
+            border_radius=15,
+        )
+
+    def _ideas_archive_view(self) -> ft.Container:
+        archived = self.db.list_thoughts(statuses=("已归档",))
+        content = (
+            ft.Column([self._archived_idea_card(item) for item in archived], spacing=10)
+            if archived
+            else ft.Container(
+                ft.Column(
+                    [
+                        ft.Icon(ft.Icons.INBOX_OUTLINED, size=38, color="#A4A8B0"),
+                        ft.Text("这里还没有已归档的灵感", size=16, color=MUTED),
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=10,
+                ),
+                padding=60,
+                alignment=ft.Alignment.CENTER,
+            )
+        )
+        return self._page_shell(
+            ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.TextButton(
+                                "返回候审区",
+                                icon=ft.Icons.ARROW_BACK_ROUNDED,
+                                on_click=lambda _: self.close_ideas_archive(),
+                            ),
+                            ft.Container(expand=True),
+                            ft.Text(f"已归档 {len(archived)}", size=14, color=MUTED),
+                        ]
+                    ),
+                    ft.Text("已归档", size=29, weight=ft.FontWeight.W_700, color=INK),
+                    ft.Text("这里像回收站：不参与候审，需要时可以恢复。", size=15, color=MUTED),
+                    content,
+                ],
+                spacing=16,
                 scroll=ft.ScrollMode.AUTO,
             )
         )
@@ -1545,27 +1681,6 @@ class EntpFletApp:
     def close_thought_review(self) -> None:
         self.selected_thought_id = None
         self.show_view(self.NAV_IDEAS)
-
-    def _review_dropdown(
-        self,
-        *,
-        label: str,
-        value: str,
-        values: list[tuple[str, str]],
-        on_select,
-    ) -> ft.Dropdown:
-        return ft.Dropdown(
-            label=label,
-            value=value,
-            options=[ft.DropdownOption(key=key, text=text) for key, text in values],
-            text_size=14,
-            border_radius=12,
-            border_color=LINE,
-            focused_border_color=BLUE,
-            content_padding=ft.Padding.symmetric(horizontal=13, vertical=10),
-            dense=True,
-            on_select=on_select,
-        )
 
     def _idea_queue_item(self, thought, selected_id: int) -> ft.Control:
         thought_id = int(thought["id"])
@@ -1642,6 +1757,7 @@ class EntpFletApp:
             content_padding=ft.Padding.symmetric(horizontal=7, vertical=8),
         )
         tag_holder = ft.Row(spacing=6, wrap=True)
+        status_state = {"value": str(thought["status"] or "未审视")}
 
         def save_all(_=None) -> None:
             self.db.update_thought(
@@ -1651,7 +1767,7 @@ class EntpFletApp:
                 conclusion=str(thought["conclusion"] or ""),
                 evidence=str(thought["evidence"] or ""),
                 next_step=str(thought["next_step"] or ""),
-                status=str(status_dropdown.value or "未审视"),
+                status=status_state["value"],
                 progress=int(thought["progress"] or 0),
                 mainline_id=thought["mainline_id"],
                 category=str(thought["category"] or "未分类"),
@@ -1694,31 +1810,55 @@ class EntpFletApp:
             save_all()
             self.page.update()
 
-        def change_status(_=None) -> None:
+        def change_status(target: str) -> None:
+            status_state["value"] = target
             save_all()
-            self.content_switcher.content = self._idea_review_view(thought_id)
-            self.page.update()
+            self.selected_thought_id = None if target == "已归档" else thought_id
+            self.idea_archive_open = False
+            self.show_view(self.NAV_IDEAS)
 
-        status_values = [(s, s) for s in ("未审视", "待孵化", "正在尝试", "已归档")]
-        status_dropdown = self._review_dropdown(
-            label="状态",
-            value=str(thought["status"]),
-            values=status_values,
-            on_select=change_status,
+        status_actions = ft.Row(
+            [
+                ft.IconButton(
+                    icon,
+                    tooltip=label,
+                    icon_size=20,
+                    icon_color=ft.Colors.WHITE if status_state["value"] == target else color,
+                    bgcolor=color if status_state["value"] == target else ft.Colors.TRANSPARENT,
+                    disabled=status_state["value"] == target,
+                    on_click=lambda _, value=target: change_status(value),
+                    style=ft.ButtonStyle(shape=rounded(10)),
+                )
+                for target, label, icon, color in (
+                    ("待孵化", "孵化", ft.Icons.EGG_ALT_OUTLINED, AMBER),
+                    ("正在尝试", "尝试", ft.Icons.SCIENCE_OUTLINED, GREEN),
+                    ("已归档", "归档", ft.Icons.ARCHIVE_OUTLINED, "#8B9099"),
+                )
+            ],
+            spacing=3,
+            tight=True,
         )
-        status_dropdown.width = 150
         tag_input.on_submit = add_tag
         render_tags()
         for field in (title_field, raw_field):
             field.on_blur = save_all
 
-        all_thoughts = self.db.list_thoughts()
+        all_thoughts = self.db.list_thoughts(
+            statuses=("已归档",)
+            if self.idea_archive_open
+            else ("未审视", "待孵化", "正在尝试")
+        )
         queue = ft.Container(
             content=ft.Column(
                 [
                     ft.Row(
                         [
-                            ft.Text("全部灵感", size=16, weight=ft.FontWeight.W_700, color=INK),
+                            ft.Text(
+                                "已归档" if self.idea_archive_open else "候审中的灵感",
+                                size=16,
+                                weight=ft.FontWeight.W_700,
+                                color=INK,
+                            ),
                             ft.Text(str(len(all_thoughts)), size=12, color=MUTED),
                         ],
                         spacing=7,
@@ -1747,7 +1887,7 @@ class EntpFletApp:
                     ft.Row(
                         [
                             ft.Container(title_field, expand=True),
-                            status_dropdown,
+                            status_actions,
                         ],
                         spacing=16,
                         vertical_alignment=ft.CrossAxisAlignment.START,
@@ -3163,7 +3303,13 @@ class EntpFletApp:
         import asyncio
 
         await asyncio.sleep(0.05)
-        await self.quick_task_input.focus()
+        try:
+            await self.quick_task_input.focus()
+        except RuntimeError:
+            # The user may navigate away before the delayed focus runs.  A
+            # detached TextField cannot be focused, but that must not surface
+            # as an application error.
+            return
 
     def select_task(self, task_id: int) -> None:
         task = self.db.get_task(task_id)
@@ -3644,6 +3790,7 @@ def main() -> None:
     args = parse_args()
 
     async def app_main(page: ft.Page) -> None:
+        ui: EntpFletApp | None = None
         try:
             import asyncio
 
@@ -3812,7 +3959,13 @@ def main() -> None:
                 traceback.format_exc(), encoding="utf-8"
             )
             try:
-                await page.window.close()
+                if ui is not None:
+                    # A normal close is intentionally intercepted by the tray
+                    # feature.  Fatal startup / QA failures must really end the
+                    # process so they cannot leave a hidden instance behind.
+                    await ui._exit_application()
+                else:
+                    await page.window.destroy()
             except Exception:
                 pass
             raise
