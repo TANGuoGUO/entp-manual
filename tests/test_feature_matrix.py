@@ -9,6 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import markdown_store as markdown_module
 from database import Database
 from markdown_store import MarkdownStore, SYSTEM_END, SYSTEM_START
 
@@ -117,10 +118,12 @@ class MainlineTests(TemporaryDatabaseTestCase):
         self.assertEqual(row["name"], "重命名主线")
         self.assertEqual(row["vision"], "自由正文\n第二行")
 
-    @unittest.expectedFailure
     def test_ML_02_empty_mainline_title_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             self.db.create_mainline("   ")
+        existing = self.db.current_mainline_id()
+        with self.assertRaises(ValueError):
+            self.db.update_mainline(existing, name="   ")
 
     def test_ML_04_multiple_mainlines_one_current(self) -> None:
         first = self.db.create_mainline("主线甲")
@@ -159,7 +162,6 @@ class MainlineTests(TemporaryDatabaseTestCase):
         with self.assertRaises(ValueError):
             self.db.archive_mainline(inbox)
 
-    @unittest.expectedFailure
     def test_ML_09_archive_rolls_back_when_setting_write_fails(self) -> None:
         current = self.db.current_mainline_id()
         self.db.create_mainline("故障时替代主线")
@@ -186,10 +188,13 @@ class TaskTests(TemporaryDatabaseTestCase):
         listed = {int(row["id"]) for row in self.db.list_tasks(mainline_id)}
         self.assertTrue(set(ids).issubset(listed))
 
-    @unittest.expectedFailure
     def test_TK_02_empty_task_title_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             self.db.create_task(self.db.current_mainline_id(), "   ")
+        task_id = self.db.create_task(self.db.current_mainline_id(), "保留标题")
+        with self.assertRaises(ValueError):
+            self.db.update_task(task_id, title="   ")
+        self.assertEqual(self.db.get_task(task_id)["title"], "保留标题")
 
     def test_TK_03_optional_fields_and_next_action(self) -> None:
         task_id = self.db.create_task(self.db.current_mainline_id(), "可选字段", due_date="")
@@ -361,6 +366,8 @@ class IdeaTests(TemporaryDatabaseTestCase):
         self.assertIsNone(thought["mainline_id"])
         self.assertEqual(thought["raw_content"], "")
         self.assertEqual(thought["tags"], "")
+        with self.assertRaises(ValueError):
+            self.db.create_thought("   ")
 
     def test_ID_03_stage_events_are_not_duplicated(self) -> None:
         thought = self.db.create_thought("阶段变化")
@@ -491,27 +498,24 @@ class MarkdownTests(TemporaryDatabaseTestCase):
     def test_MD_07_immediate_write_failure_is_reported(self) -> None:
         self.markdown.sync_all(self.db)
         task = self.db.create_task(self.db.current_mainline_id(), "写盘故障")
-        with patch.object(Path, "write_text", side_effect=OSError("disk-full")):
+        with patch.object(markdown_module.os, "replace", side_effect=OSError("disk-full")):
             with self.assertRaisesRegex(OSError, "disk-full"):
                 self.markdown.sync_all(self.db)
         self.assertIsNotNone(self.db.get_task(task), "数据库已保存的对象应保持可辨认")
 
-    @unittest.expectedFailure
     def test_MD_07_existing_document_survives_partial_write_failure(self) -> None:
         task = self.db.create_task(self.db.current_mainline_id(), "原子写入保护")
         self.markdown.sync_all(self.db)
         target = self.markdown.path_for("task", task)
         before = target.read_text(encoding="utf-8")
-        original_write_text = Path.write_text
+        original_replace = markdown_module.os.replace
 
-        def fail_after_truncate(path: Path, content: str, *args, **kwargs):
-            if path == target:
-                with path.open("w", encoding="utf-8", newline="\n") as handle:
-                    handle.write(content[:32])
+        def fail_before_replace(source: Path, destination: Path):
+            if Path(destination) == target:
                 raise OSError("simulated-interrupted-write")
-            return original_write_text(path, content, *args, **kwargs)
+            return original_replace(source, destination)
 
-        with patch.object(Path, "write_text", autospec=True, side_effect=fail_after_truncate):
+        with patch.object(markdown_module.os, "replace", side_effect=fail_before_replace):
             with self.assertRaisesRegex(OSError, "simulated-interrupted-write"):
                 self.markdown.sync_all(self.db)
         self.assertEqual(
@@ -519,6 +523,7 @@ class MarkdownTests(TemporaryDatabaseTestCase):
             before,
             "同步必须先写临时文件再原子替换，不能留下截断文档",
         )
+        self.assertEqual(list(target.parent.glob(f".{target.name}.*.tmp")), [])
 
 
 class RecoveryTests(TemporaryDatabaseTestCase):
@@ -536,7 +541,6 @@ class RecoveryTests(TemporaryDatabaseTestCase):
             locker.rollback()
             locker.close()
 
-    @unittest.expectedFailure
     def test_ER_03_ui_has_global_callback_error_handler(self) -> None:
         source = (Path(__file__).resolve().parents[1] / "flet_app.py").read_text(encoding="utf-8")
         self.assertRegex(
@@ -544,6 +548,8 @@ class RecoveryTests(TemporaryDatabaseTestCase):
             r"page\.on_error\s*=",
             "Flet 页面需要统一记录并提示运行期回调异常",
         )
+        self.assertRegex(source, r"window\.on_event\s*=", "桌面窗口关闭时需要释放数据库")
+        self.assertIn("database is locked", source)
 
     def test_ER_05_duplicate_completion_does_not_duplicate_calendar_item(self) -> None:
         task = self.db.create_task(self.db.current_mainline_id(), "重复点击完成", is_today=True)

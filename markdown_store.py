@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
@@ -54,10 +56,31 @@ class MarkdownStore:
         path = self.path_for(kind, object_id)
         return path.read_text(encoding="utf-8") if path.exists() else ""
 
+    @staticmethod
+    def _atomic_write_text(path: Path, content: str) -> None:
+        """Write beside the destination and replace it only after a full flush.
+
+        A crash, full disk, sync-tool conflict, or permission error can leave a
+        temporary file behind briefly, but can no longer truncate the user's
+        last valid Markdown document.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def write_user_edited(self, kind: str, object_id: int, content: str) -> Path:
         path = self.path_for(kind, object_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8", newline="\n")
+        self._atomic_write_text(path, content)
         return path
 
     def daily_path(self, day: str) -> Path:
@@ -77,7 +100,7 @@ class MarkdownStore:
         else:
             merged = system_block + "\n\n" + user_template.strip() + "\n"
 
-        path.write_text(merged, encoding="utf-8", newline="\n")
+        self._atomic_write_text(path, merged)
         return path
 
     def _write_synced(self, kind: str, object_id: int, system: str, user_template: str) -> Path:
@@ -163,7 +186,7 @@ _以上为程序同步区，请在下方自由记录。_"""
         if SYSTEM_END in content:
             head, tail = content.split(SYSTEM_END, 1)
             if tail.strip() == legacy_template.strip():
-                path.write_text(head + SYSTEM_END + "\n", encoding="utf-8", newline="\n")
+                self._atomic_write_text(path, head + SYSTEM_END + "\n")
         return path
 
     def _sync_task(self, db: "Database", row) -> Path:
@@ -267,7 +290,7 @@ _以上为程序同步区，请在下方自由记录。_"""
         if SYSTEM_END in content:
             head, tail = content.split(SYSTEM_END, 1)
             if tail.strip() == legacy_template.strip():
-                path.write_text(head + SYSTEM_END + "\n", encoding="utf-8", newline="\n")
+                self._atomic_write_text(path, head + SYSTEM_END + "\n")
         return path
 
     def _sync_execution(self, row) -> Path:
@@ -400,18 +423,16 @@ _以上为程序同步区。任务后续改名或转移主线，不会改写这�
             for row in rows:
                 filename = self.path_for(kind, row["id"]).name
                 index_lines.append(f"- [{labeler(row)}](./{filename})")
-            (self.root / directory / "INDEX.md").write_text(
-                "\n".join(index_lines) + "\n", encoding="utf-8", newline="\n"
+            self._atomic_write_text(
+                self.root / directory / "INDEX.md", "\n".join(index_lines) + "\n"
             )
             root_lines.append(f"- [{directory}](./{directory}/INDEX.md) · {len(rows)} 个文档")
         daily_index = ["# 每日账本", "", "_此索引由程序自动生成。_", ""]
         for day in daily_dates:
             summary = self.daily_path(day).name
             daily_index.append(f"- [{day}](./{summary})")
-        (self.root / "每日" / "INDEX.md").write_text(
-            "\n".join(daily_index) + "\n", encoding="utf-8", newline="\n"
+        self._atomic_write_text(
+            self.root / "每日" / "INDEX.md", "\n".join(daily_index) + "\n"
         )
         root_lines.append(f"- [每日账本](./每日/INDEX.md) · {len(daily_dates)} 个文档")
-        (self.root / "README.md").write_text(
-            "\n".join(root_lines) + "\n", encoding="utf-8", newline="\n"
-        )
+        self._atomic_write_text(self.root / "README.md", "\n".join(root_lines) + "\n")

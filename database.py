@@ -28,9 +28,12 @@ class Database:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path)
+        # A bounded wait handles brief antivirus/sync-tool contention without
+        # making the desktop UI appear frozen indefinitely.
+        self.conn = sqlite3.connect(self.path, timeout=2.0)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.execute("PRAGMA busy_timeout = 2000")
         self._create_schema()
         self._seed_if_empty()
         self._migrate_legacy_daily_entries()
@@ -505,17 +508,20 @@ class Database:
         )
         if mainline_id == current_id and not replacement:
             raise ValueError("至少需要保留一条未归档主线")
-        self.conn.execute(
-            "UPDATE mainlines SET status = '已归档' WHERE id = ?",
-            (mainline_id,),
-        )
-        if mainline_id == current_id and replacement:
+        # Both state changes form one business operation. The connection
+        # context commits once on success and rolls every statement back when
+        # any later statement fails.
+        with self.conn:
             self.conn.execute(
-                """INSERT INTO app_settings(key, value) VALUES ('current_mainline_id', ?)
-                   ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
-                (str(replacement["id"]),),
+                "UPDATE mainlines SET status = '已归档' WHERE id = ?",
+                (mainline_id,),
             )
-        self.conn.commit()
+            if mainline_id == current_id and replacement:
+                self.conn.execute(
+                    """INSERT INTO app_settings(key, value) VALUES ('current_mainline_id', ?)
+                       ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                    (str(replacement["id"]),),
+                )
         if mainline_id == current_id and replacement:
             return int(replacement["id"])
         return current_id
@@ -539,6 +545,8 @@ class Database:
         review_mode: str | None = None,
         next_review_date: str | None = None,
     ) -> None:
+        if name is not None and not name.strip():
+            raise ValueError("主线标题不能为空")
         fields: list[str] = []
         values: list[Any] = []
         for column, value in (
@@ -563,8 +571,11 @@ class Database:
         return self.rows("SELECT * FROM mainlines ORDER BY id")
 
     def create_mainline(self, name: str, vision: str = "") -> int:
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("主线标题不能为空")
         cur = self.conn.execute(
-            "INSERT INTO mainlines(name, vision) VALUES (?, ?)", (name.strip(), vision.strip())
+            "INSERT INTO mainlines(name, vision) VALUES (?, ?)", (clean_name, vision.strip())
         )
         self.conn.commit()
         mainline_id = int(cur.lastrowid)
@@ -678,6 +689,9 @@ class Database:
         is_today: bool = False,
         next_action: str = "",
     ) -> int:
+        clean_title = title.strip()
+        if not clean_title:
+            raise ValueError("任务标题不能为空")
         if status not in TASK_STATUSES:
             status = "待执行"
         if is_today and status == "待执行":
@@ -688,7 +702,7 @@ class Database:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 mainline_id,
-                title.strip(),
+                clean_title,
                 description.strip(),
                 status,
                 priority,
@@ -740,6 +754,8 @@ class Database:
         description: str | None = None,
         next_action: str | None = None,
     ) -> None:
+        if title is not None and not title.strip():
+            raise ValueError("任务标题不能为空")
         fields: list[str] = []
         values: list[Any] = []
         for column, value in (
@@ -1212,13 +1228,16 @@ class Database:
         category: str = "未分类",
         interest_level: str = "有点好奇",
     ) -> int:
+        clean_title = title.strip()
+        if not clean_title:
+            raise ValueError("灵感标题不能为空")
         cur = self.conn.execute(
             """INSERT INTO thoughts(
                    mainline_id, title, raw_content, status, category, interest_level
                ) VALUES (?, ?, ?, '未审视', ?, ?)""",
             (
                 mainline_id,
-                title.strip(),
+                clean_title,
                 raw_content.strip(),
                 category.strip() or "未分类",
                 interest_level if interest_level in INTEREST_LEVELS else "有点好奇",
@@ -1243,6 +1262,9 @@ class Database:
         interest_level: str | None = None,
         tags: str | None = None,
     ) -> None:
+        clean_title = title.strip()
+        if not clean_title:
+            raise ValueError("灵感标题不能为空")
         if status not in THOUGHT_STATUSES:
             status = "未审视"
         current = self.get_thought(thought_id)
@@ -1272,7 +1294,7 @@ class Database:
                WHERE id = ?""",
             (
                 mainline_id,
-                title.strip(),
+                clean_title,
                 raw_content.strip(),
                 conclusion.strip(),
                 evidence.strip(),

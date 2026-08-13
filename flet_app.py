@@ -6,6 +6,7 @@ import ctypes
 import ctypes.wintypes
 import os
 import sys
+import traceback
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -26,6 +27,7 @@ if os.name == "nt":
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_DB = ROOT / "entp_manual.db"
+RUNTIME_ERROR_LOG = ROOT / "logs" / "runtime-errors.log"
 
 BLUE = "#316BEE"
 BLUE_DARK = "#2457CC"
@@ -80,6 +82,7 @@ class EntpFletApp:
 
     def __init__(self, page: ft.Page, db_path: Path, initial_view: str = "current") -> None:
         self.page = page
+        self._closed = False
         self.db = Database(db_path)
         markdown_root = (
             ROOT / "markdown"
@@ -87,7 +90,7 @@ class EntpFletApp:
             else db_path.parent / f"{db_path.stem}-markdown"
         )
         self.markdown = MarkdownStore(markdown_root)
-        self.markdown.sync_all(self.db)
+        self._sync_markdown(show_error=False)
         self.current_mid = self.db.current_mainline_id()
         self.today = date.today()
         self._observed_local_day = self.today
@@ -235,6 +238,11 @@ class EntpFletApp:
         self.page.bgcolor = CANVAS
         self.page.enable_screenshots = True
         self.page.theme_mode = ft.ThemeMode.LIGHT
+        self.page.on_error = self._handle_page_error
+        self.page.on_close = self._handle_page_closed
+        self.page.on_disconnect = self._handle_page_closed
+        self.page.window.prevent_close = True
+        self.page.window.on_event = self._handle_window_event
         # Let the OS provide the real DPI-aware work area. Explicitly requesting
         # a 1440-DIP window on a scaled Windows desktop makes the right side land
         # off-screen even though Flet reports a wide viewport.
@@ -246,6 +254,65 @@ class EntpFletApp:
             font_family="Microsoft YaHei UI",
             visual_density=ft.VisualDensity.COMFORTABLE,
         )
+
+    @staticmethod
+    def _write_runtime_error(context: str, details: str) -> None:
+        try:
+            RUNTIME_ERROR_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with RUNTIME_ERROR_LOG.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {context}\n{details.rstrip()}\n\n")
+        except OSError:
+            pass
+
+    def _notify_error(self, message: str) -> None:
+        try:
+            self.page.show_dialog(
+                ft.SnackBar(
+                    content=ft.Text(message, size=14),
+                    bgcolor="#3A2530",
+                    duration=5000,
+                )
+            )
+        except Exception:
+            self._write_runtime_error("无法显示错误提示", traceback.format_exc())
+
+    def _sync_markdown(self, *, show_error: bool = True) -> bool:
+        try:
+            self.markdown.sync_all(self.db)
+            return True
+        except Exception as error:
+            self._write_runtime_error("Markdown 同步失败", traceback.format_exc())
+            if show_error:
+                self._notify_error(
+                    f"数据已经保存，但 Markdown 文档同步失败：{error}。旧文档仍然保留。"
+                )
+            return False
+
+    def _handle_page_error(self, event) -> None:
+        details = str(getattr(event, "data", "") or "未知运行期错误")
+        self._write_runtime_error("Flet 运行期回调异常", details)
+        if "database is locked" in details.lower():
+            message = "数据库暂时被其他程序占用，本次操作没有完成。请稍后再试。"
+        else:
+            message = "这次操作没有完成，错误已经记录到 logs/runtime-errors.log。"
+        self._notify_error(message)
+
+    def _close_database(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.db.close()
+        except Exception:
+            self._write_runtime_error("关闭数据库连接失败", traceback.format_exc())
+
+    def _handle_page_closed(self, _=None) -> None:
+        self._close_database()
+
+    async def _handle_window_event(self, event) -> None:
+        if event.type == ft.WindowEventType.CLOSE:
+            self._close_database()
+            await self.page.window.destroy()
 
     def _build_rail(self) -> ft.NavigationRail:
         brand = ft.Container(
@@ -712,7 +779,7 @@ class EntpFletApp:
                 description=description_field.value,
                 next_action=next_action_field.value,
             )
-            self.markdown.sync_all(self.db)
+            self._sync_markdown()
 
         title_field.on_blur = save_fields
         description_field.on_blur = save_fields
@@ -931,6 +998,7 @@ class EntpFletApp:
     def _ideas_board_view(self) -> ft.Container:
         thoughts = self.db.list_thoughts()
         stages = ("未审视", "待孵化", "正在尝试", "已归档")
+        stage_height = max(360, min(620, float(self.page.height or 760) - 250))
         stage_columns: list[ft.Control] = []
         for status in stages:
             label, color, icon = self._idea_stage_spec(status)
@@ -963,7 +1031,15 @@ class EntpFletApp:
                         spacing=12,
                         expand=True,
                     ),
-                    width=276,
+                    height=stage_height,
+                    col={
+                        ft.ResponsiveRowBreakpoint.XS: 12,
+                        ft.ResponsiveRowBreakpoint.SM: 12,
+                        ft.ResponsiveRowBreakpoint.MD: 6,
+                        ft.ResponsiveRowBreakpoint.LG: 3,
+                        ft.ResponsiveRowBreakpoint.XL: 3,
+                        ft.ResponsiveRowBreakpoint.XXL: 3,
+                    },
                     padding=14,
                     bgcolor="#F8F9FB",
                     border=ft.Border.all(1, LINE),
@@ -1022,10 +1098,14 @@ class EntpFletApp:
                         vertical_alignment=ft.CrossAxisAlignment.END,
                     ),
                     quick_box,
-                    ft.Row(stage_columns, spacing=14, scroll=ft.ScrollMode.AUTO, expand=True),
+                    ft.ResponsiveRow(
+                        stage_columns,
+                        spacing=14,
+                        run_spacing=14,
+                    ),
                 ],
                 spacing=20,
-                expand=True,
+                scroll=ft.ScrollMode.AUTO,
             )
         )
 
@@ -1036,7 +1116,7 @@ class EntpFletApp:
             self.quick_idea_input.update()
             return
         self.db.create_thought(title, mainline_id=None)
-        self.markdown.sync_all(self.db)
+        self._sync_markdown()
         self.quick_idea_input.value = ""
         self.quick_idea_input.error_text = None
         self.selected_thought_id = None
@@ -1172,7 +1252,7 @@ class EntpFletApp:
                 interest_level=str(thought["interest_level"] or "有点好奇"),
                 tags=",".join(tags),
             )
-            self.markdown.sync_all(self.db)
+            self._sync_markdown()
 
         def remove_tag(tag: str) -> None:
             if tag in tags:
@@ -1564,9 +1644,141 @@ class EntpFletApp:
         )
 
     def open_blank_mainline(self, _=None) -> None:
-        mainline_id = self.db.create_mainline("", "")
-        self.markdown.sync_all(self.db)
-        self.open_mainline_editor(mainline_id, autofocus=True)
+        self.selected_mainline_id = None
+        self.content_switcher.content = self._blank_mainline_editor_view()
+        self.page.update()
+
+    def _blank_mainline_editor_view(self) -> ft.Container:
+        """Let the user think on a blank page before a database row exists."""
+        editor_height = max(560, min(780, float(self.page.height or 760) - 105))
+        state: dict[str, int | None] = {"mainline_id": None}
+        title_field = ft.TextField(
+            hint_text="主线标题",
+            hint_style=ft.TextStyle(size=26, color="#B4B7BE", weight=ft.FontWeight.W_600),
+            border=ft.InputBorder.NONE,
+            text_size=27,
+            text_style=ft.TextStyle(weight=ft.FontWeight.W_700, color=INK),
+            content_padding=0,
+            autofocus=True,
+        )
+        body_field = ft.TextField(
+            border=ft.InputBorder.NONE,
+            multiline=True,
+            min_lines=20,
+            max_lines=35,
+            text_size=16,
+            content_padding=ft.Padding.only(top=8),
+            expand=True,
+        )
+        saved_state = ft.Text("输入标题后自动保存", size=13, color=MUTED)
+
+        def save(*, require_title: bool = False) -> int | None:
+            title = str(title_field.value or "").strip()
+            body = str(body_field.value or "")
+            if not title:
+                if require_title or body.strip():
+                    title_field.error_text = "先给这条主线一个标题"
+                    title_field.update()
+                return None
+            title_field.error_text = None
+            mainline_id = state["mainline_id"]
+            if mainline_id is None:
+                mainline_id = self.db.create_mainline(title, body)
+                state["mainline_id"] = mainline_id
+                self.selected_mainline_id = mainline_id
+            else:
+                self.db.update_mainline(mainline_id, name=title, vision=body)
+            self._sync_markdown()
+            saved_state.value = "已自动保存"
+            saved_state.update()
+            return mainline_id
+
+        def save_on_blur(_=None) -> None:
+            save()
+
+        def save_and_close(_=None) -> None:
+            if not str(title_field.value or "").strip() and not str(body_field.value or "").strip():
+                self.close_mainline_editor()
+                return
+            if save(require_title=True) is not None:
+                self.close_mainline_editor()
+
+        def save_and_activate(_=None) -> None:
+            mainline_id = save(require_title=True)
+            if mainline_id is not None:
+                self.activate_mainline(mainline_id)
+
+        def save_and_open_markdown(_=None) -> None:
+            mainline_id = save(require_title=True)
+            if mainline_id is not None:
+                self.open_markdown("mainline", mainline_id)
+
+        title_field.on_blur = save_on_blur
+        body_field.on_blur = save_on_blur
+        return self._page_shell(
+            ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.TextButton(
+                                "返回主线保管箱",
+                                icon=ft.Icons.ARROW_BACK_ROUNDED,
+                                on_click=save_and_close,
+                            ),
+                            ft.Container(expand=True),
+                            ft.Text("新主线", size=13, color=MUTED),
+                        ]
+                    ),
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Row(
+                                    [
+                                        ft.Container(title_field, expand=True),
+                                        ft.OutlinedButton(
+                                            "设为当前主线",
+                                            icon=ft.Icons.FLAG_OUTLINED,
+                                            on_click=save_and_activate,
+                                            style=ft.ButtonStyle(
+                                                color=BLUE,
+                                                side=ft.BorderSide(1, "#C9D8FF"),
+                                                shape=rounded(12),
+                                            ),
+                                        ),
+                                    ],
+                                    spacing=14,
+                                    vertical_alignment=ft.CrossAxisAlignment.START,
+                                ),
+                                saved_state,
+                                ft.Divider(height=1, color=LINE),
+                                body_field,
+                                ft.Row(
+                                    [
+                                        ft.TextButton(
+                                            "打开 Markdown",
+                                            icon=ft.Icons.DESCRIPTION_OUTLINED,
+                                            on_click=save_and_open_markdown,
+                                        ),
+                                        ft.Text("没有标题时不会创建空记录", size=12, color=MUTED),
+                                    ],
+                                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                ),
+                            ],
+                            spacing=10,
+                        ),
+                        width=1040,
+                        height=editor_height,
+                        padding=24,
+                        bgcolor=SURFACE,
+                        border=ft.Border.all(1, LINE),
+                        border_radius=18,
+                    ),
+                ],
+                spacing=14,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                scroll=ft.ScrollMode.AUTO,
+            )
+        )
 
     def open_mainline_editor(self, mainline_id: int, *, autofocus: bool = False) -> None:
         mainline = next(
@@ -1615,7 +1827,7 @@ class EntpFletApp:
                 name=str(title_field.value or ""),
                 vision=str(body_field.value or ""),
             )
-            self.markdown.sync_all(self.db)
+            self._sync_markdown()
 
         def save_and_close(_=None) -> None:
             save()
@@ -2108,7 +2320,7 @@ class EntpFletApp:
             due_date=date.today().isoformat(),
             is_today=True,
         )
-        self.markdown.sync_all(self.db)
+        self._sync_markdown()
         event.control.value = ""
         self.show_view(self.NAV_TODAY)
 
@@ -2131,7 +2343,7 @@ class EntpFletApp:
 
     def set_today_entry_completed(self, entry_id: int, completed: bool) -> None:
         self.db.set_daily_entry_completed(entry_id, completed)
-        self.markdown.sync_all(self.db)
+        self._sync_markdown()
         self.calendar_selected_day = date.today()
         self.calendar_month = date.today().replace(day=1)
         self.show_view(self.NAV_TODAY)
@@ -2141,7 +2353,7 @@ class EntpFletApp:
             (int(entry["id"]) for entry in entries),
             date.today().isoformat(),
         )
-        self.markdown.sync_all(self.db)
+        self._sync_markdown()
         self.show_view(self.NAV_TODAY)
 
     # --------------------------- Completion calendar ---------------------------
@@ -2467,7 +2679,7 @@ class EntpFletApp:
 
     def toggle_task(self, task_id: int, completed: bool) -> None:
         self.db.set_task_completed(task_id, completed)
-        self.markdown.sync_all(self.db)
+        self._sync_markdown()
         self.refresh_current_sections()
 
     def focus_quick_input(self, _=None) -> None:
@@ -2482,7 +2694,7 @@ class EntpFletApp:
         if not title:
             return
         self.db.create_task(self.current_mid, title, is_today=True)
-        self.markdown.sync_all(self.db)
+        self._sync_markdown()
         event.control.value = ""
         self.refresh_current_sections()
         self.page.run_task(self._restore_quick_input_focus)
@@ -2512,7 +2724,7 @@ class EntpFletApp:
 
     def set_focus_task(self, task_id: int) -> None:
         self.db.set_focus_task(task_id)
-        self.markdown.sync_all(self.db)
+        self._sync_markdown()
         self.refresh_current_sections()
 
     def activate_mainline(self, mainline_id: int) -> None:
@@ -2529,23 +2741,30 @@ class EntpFletApp:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(str(error))))
             return
         self.selected_mainline_id = None
-        self.markdown.sync_all(self.db)
+        self._sync_markdown()
         self.refresh_vault(update=False)
         self.content_switcher.content = self._vault_view()
         self.page.update()
 
     def restore_mainline(self, mainline_id: int) -> None:
         self.db.restore_mainline(mainline_id)
-        self.markdown.sync_all(self.db)
+        self._sync_markdown()
         self.refresh_vault(update=False)
         self.content_switcher.content = self._vault_view()
         self.page.update()
 
     def open_markdown(self, kind: str, object_id: int) -> None:
-        self.markdown.sync_all(self.db)
+        if not self._sync_markdown():
+            return
         path = self.markdown.path_for(kind, object_id)
-        if os.name == "nt":
-            os.startfile(path)  # type: ignore[attr-defined]
+        try:
+            if os.name == "nt":
+                os.startfile(path)  # type: ignore[attr-defined]
+            else:
+                raise OSError("当前系统没有配置 Markdown 打开方式")
+        except OSError as error:
+            self._write_runtime_error("外部打开 Markdown 失败", traceback.format_exc())
+            self._notify_error(f"无法打开 Markdown 文档：{error}")
 
     def open_mainline_tasks_dialog(self, mainline_id: int) -> None:
         mainline = next(m for m in self.db.list_mainlines() if int(m["id"]) == mainline_id)
@@ -2601,7 +2820,7 @@ class EntpFletApp:
                 next_action=next_action.value,
                 complete=bool(complete.value),
             )
-            self.markdown.sync_all(self.db)
+            self._sync_markdown()
             self._close_dialog()
             self.refresh_current_sections()
 
@@ -2633,7 +2852,7 @@ class EntpFletApp:
             raw_content.strip(),
             None,
         )
-        self.markdown.sync_all(self.db)
+        self._sync_markdown()
         return thought_id
 
     def _inline_inspiration_capture(self) -> ft.Control:
@@ -2702,6 +2921,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qa-idea-detail", action="store_true")
     parser.add_argument("--qa-mainline-editor", action="store_true")
     parser.add_argument("--qa-archive-mainline", action="store_true")
+    parser.add_argument("--qa-runtime-error", action="store_true")
     return parser.parse_args()
 
 
@@ -2810,6 +3030,11 @@ def main() -> None:
                 await asyncio.sleep(0.3)
             if args.qa_inspiration_dialog:
                 ui.open_inline_inspiration()
+                await asyncio.sleep(0.5)
+            if args.qa_runtime_error:
+                from types import SimpleNamespace
+
+                ui._handle_page_error(SimpleNamespace(data="database is locked"))
                 await asyncio.sleep(0.5)
             if args.view != "vault" and args.qa_task_detail:
                 await asyncio.sleep(0.4)
