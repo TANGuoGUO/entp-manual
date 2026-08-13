@@ -1,0 +1,75 @@
+Metadata-Version: 2.1
+Name: tkinterweb
+Version: 4.25.3
+Summary: HTML/CSS widgets for Tkinter
+Home-page: https://github.com/Andereoo/TkinterWeb
+License: MIT
+Keywords: tkinter,Tkinter,tkhtml,Tkhtml,Tk,HTML,CSS,webbrowser
+Classifier: Intended Audience :: Developers
+Classifier: License :: Freeware
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Natural Language :: English
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: Software Development
+Requires-Python: >=3.2
+Description-Content-Type: text/markdown
+License-File: LICENSE.md
+Requires-Dist: tkinterweb-tkhtml >=2.1.1
+Provides-Extra: full
+Requires-Dist: brotli ; extra == 'full'
+Requires-Dist: cairosvg ; extra == 'full'
+Requires-Dist: pillow ; extra == 'full'
+Requires-Dist: pythonmonkey ; extra == 'full'
+Requires-Dist: tkinterweb-tkhtml-extras >=1.3.1 ; extra == 'full'
+Provides-Extra: html
+Requires-Dist: tkinterweb-tkhtml-extras >=1.3.1 ; extra == 'html'
+Provides-Extra: images
+Requires-Dist: pillow ; extra == 'images'
+Provides-Extra: javascript
+Requires-Dist: pythonmonkey ; extra == 'javascript'
+Provides-Extra: recommended
+Requires-Dist: pillow ; extra == 'recommended'
+Requires-Dist: tkinterweb-tkhtml-extras >=1.3.1 ; extra == 'recommended'
+Provides-Extra: requests
+Requires-Dist: brotli ; extra == 'requests'
+Provides-Extra: svg
+Requires-Dist: cairosvg ; extra == 'svg'
+Requires-Dist: pillow ; extra == 'svg'
+Requires-Dist: tkinterweb-tkhtml-extras >=1.3.1 ; extra == 'svg'
+
+# TkinterWeb 
+**Fast and lightweight web browser, rich text, and app design widgets for Tkinter.**
+
+## Overview
+**TkinterWeb adds HTML and CSS rendering capabilities to Tkinter widgets.**
+
+Common use cases include displaying help files, documentation, and other HTML content, rendering images (including SVG), building rich-text editors, designing apps with HTML templates, and creating more modern-looking interfaces, with advanced styling and even round buttons!
+
+All [major operating systems](https://tkinterweb.readthedocs.io/en/latest/compatibility.html#a-note-on-tkhtml-binaries) running Python 3.2+ are supported. 
+
+## Installation
+**To install TkinterWeb, simply type `pip install tkinterweb[recommended]` in the command prompt or terminal. That's it!**
+
+## Usage
+
+**TkinterWeb provides:**
+* A [frame widget](https://tkinterweb.readthedocs.io/en/latest/api/htmlframe.html) to display and edit websites, help files, RSS feeds, and any other styled HTML in Tkinter.
+* A [label widget](https://tkinterweb.readthedocs.io/en/latest/api/htmlframe.html#tkinterweb.HtmlLabel) that can display styled HTML.
+* A [text widget](https://tkinterweb.readthedocs.io/en/latest/api/htmlframe.html#tkinterweb.HtmlText) that allows the user to edit styled HTML.
+
+**TkinterWeb can be used in any Tkinter application to display and edit websites, help pages, documentation, and much more! Here is an example:**
+
+```
+import tkinter as tk
+from tkinterweb import HtmlFrame # import the HtmlFrame widget
+
+root = tk.Tk() # create the Tkinter window
+frame = HtmlFrame(root, messages_enabled=True) # create the HTML widget
+frame.load_website("https://tkinterweb.readthedocs.io/en/latest/") # load a website
+frame.pack(fill="both", expand=True) # attach the HtmlFrame widget to the window
+root.mainloop()
+```
+![Output](https://raw.githubusercontent.com/Andereoo/TkinterWeb/main/images/tkinterweb-demo.png)
+
+**Visit the [Read the Docs home page](https://tkinterweb.readthedocs.io/en/latest/) for more information!**

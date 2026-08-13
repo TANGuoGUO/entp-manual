@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+qa-*.png
+logs/
+designs/*-markdown/
+designs/**/*-markdown/
+.pytest_cache/
+
+# User data and local runtime state are never versioned.
+*.db
+*.db-shm
+*.db-wal
+backups/
+markdown/
+outputs/
+tmppdauzxck/

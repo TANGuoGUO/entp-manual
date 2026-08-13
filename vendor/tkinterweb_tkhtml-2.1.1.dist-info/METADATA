@@ -1,0 +1,25 @@
+Metadata-Version: 2.1
+Name: tkinterweb-tkhtml
+Version: 2.1.1
+Summary: HTML/CSS viewer for Tkinter
+Home-page: https://github.com/Andereoo/TkinterWeb-Tkhtml
+License: MIT
+Keywords: tkinter,Tkinter,tkhtml,Tkhtml,Tk,HTML,CSS,webbrowser
+Classifier: Intended Audience :: Developers
+Classifier: License :: Freeware
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Natural Language :: English
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Topic :: Software Development
+Requires-Python: >=3.2
+Description-Content-Type: text/markdown
+License-File: LICENSE.md
+
+# TkinterWeb-Tkhtml
+
+**This package provides pre-built binaries of a modified version of the Tkhtml3 widget from https://github.com/Andereoo/TkinterWeb-Tkhtml, which enables the display of styled HTML and CSS code in Tkinter applications.**
+
+This package can be used to load the Tkhtml widget into Tkinter applications but is mainly intended to be used through TkinterWeb, which provides a full Python interface. 
+
+**See https://github.com/Andereoo/TkinterWeb for more information.**

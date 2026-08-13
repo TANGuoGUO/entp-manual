@@ -1,0 +1,127 @@
+"""
+A simple JavaScript-Tkhtml bridge.
+Copyright (c) 2021-2025 Andrew Clarke
+"""
+
+from . import dom, utilities
+
+from textwrap import dedent
+from traceback import format_exc
+
+# JavaScript is experimental and not used by everyone
+# We only import PythonMonkey if/when needed
+pm = None
+
+class JSEngine:
+    """Access this class via the :attr:`~tkinterweb.HtmlFrame.javascript` property of the :class:`~tkinterweb.HtmlFrame` and :class:`~tkinterweb.HtmlLabel` widgets.
+
+    New in version 4.12.
+    
+    :ivar html: The associated :class:`.TkinterWeb` instance.
+    :ivar document: The associated :class:`.HTMLDocument` instance.
+    :ivar backend: The scripting backend in use. May be ``pythonmonkey`` or ``python``. New in version 4.19.
+    :ivar sandbox: If True, scripts running Python code will lose access to built-in objects. Default False. New in version 4.19."""
+
+    def __init__(self, html, document, backend):
+        self.html = html
+        self.document = document
+        self.backend = backend
+        
+        self.sandbox = False
+
+        if backend not in {"pythonmonkey", "python"}: 
+            raise RuntimeError(f"Unknown backend {backend}")
+
+    def __repr__(self):
+        return f"{self.html._w}::{self.__class__.__name__.lower()}"
+
+    def register(self, name, obj):
+        """Register new JavaScript object. This can be used to access Python variables, functions, and classes from JavaScript (eg. to add a callback for the JavaScript ``alert()`` function or add a ``window`` API). 
+        
+        JavaScript must be enabled.
+        
+        :param name: The name of the new JavaScript object.
+        :type name: str
+        :param obj: The Python object to pass.
+        :type obj: anything
+        :raise RuntimeError: If JavaScript is not enabled."""
+        # TODO: it would be nice to make name optional
+        if self.html.javascript_enabled:
+            if self.backend == "pythonmonkey":
+                self._initialize_javascript()
+                pm.eval(f"(function(pyObj) {{globalThis.{name} = pyObj}})")(obj)
+            elif self.backend == "python":
+                self._initialize_exec_context()
+                self._globals[name] = obj
+        else:
+            raise RuntimeError("JavaScript support must be enabled to register a JavaScript object")
+        
+    def eval(self, expr, _this=None):
+        """Evaluate JavaScript code.
+        
+        JavaScript must be enabled.
+        
+        :param expr: The JavaScript code to evaluate.
+        :type expr: str
+        :raise RuntimeError: If JavaScript is not enabled."""
+        if self.html.javascript_enabled:
+            if self.backend == "pythonmonkey":
+                self._initialize_javascript()
+                if _this is not None:
+                    # Bind 'this'
+                    # Note: if anyone tries to run a function named TkinterWeb_JSEngine_run (unlikely); this will throw up.
+                    return pm.eval(f"(element) => {{function TkinterWeb_JSEngine_run() {{ {expr} }}; TkinterWeb_JSEngine_run.bind(element)()}}")(_this)
+                else:
+                    return pm.eval(expr)
+            elif self.backend == "python":
+                self._initialize_exec_context()
+                # Pass _locals to copy JavaScript 'this' behaviour.
+                _locals = {}
+                if _this is not None:
+                    _locals["this"] = _this
+                    
+                exec(expr, self._globals, _locals)
+
+                # Add new variables to _global
+                for var in _locals:
+                    if _this is not None and var == "this":
+                        continue
+                    self._globals[var] = _locals[var]
+        else:
+            raise RuntimeError("JavaScript support must be enabled to run JavaScript")
+        
+    def _initialize_javascript(self):
+        global pm
+        if pm is None:
+            try:
+                import pythonmonkey as pm
+                self.register("document", self.document)
+            except ModuleNotFoundError:
+                raise ModuleNotFoundError("PythonMonkey is required to run JavaScript files but is not installed.")
+            
+    def _initialize_exec_context(self):
+        if not hasattr(self, "_globals"):
+            self._globals = {
+                # Full built-ins may be intentionally exposed if execution is trusted.
+                "__builtins__": {} if self.sandbox else __builtins__,
+                "document": self.document,
+            }
+
+    def _on_script(self, attributes, tag_contents):
+        try:
+            tag_contents = dedent(tag_contents).strip()
+            self.eval(tag_contents)
+        except Exception as error:
+            if self.backend == "python": error = format_exc()
+            if "src" in attributes:
+                self.html.post_message(f"ERROR: the JavaScript interpreter encountered an error while running the script from {attributes['src']}: {error}")
+            else:
+                self.html.post_message(f"ERROR: the JavaScript interpreter encountered an error while running the script \n\"{utilities.shorten(tag_contents)}\":\n{error}")
+
+    def _on_element_script(self, node_handle, attribute, attr_contents):
+        try:
+            element = dom.HTMLElement(self.document, node_handle)
+            self.eval(attr_contents, element)
+        except Exception as error:
+            if self.backend == "python": error = format_exc()
+            self.html.post_message(f"ERROR: the JavaScript interpreter encountered an error while running an {attribute} script: {error}")
