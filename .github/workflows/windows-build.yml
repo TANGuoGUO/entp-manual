@@ -1,0 +1,102 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-flet.txt
+          python -m pip install pytest
+
+      - name: Run Python tests
+        shell: pwsh
+        run: python -m pytest -q
+
+      - name: Build native Windows app
+        shell: pwsh
+        run: |
+          flet build windows . --output build\windows `
+            --project entp_manual `
+            --artifact ENTPManual `
+            --product "ENTP 自强手册" `
+            --company "ENTP Manual" `
+            --description "好奇心动力回流系统" `
+            --build-version 2.1.3 `
+            --python-version 3.13 `
+            --exclude .venv build release tests vendor outputs logs backups designs installer markdown "*.db" "*.spec" `
+            --yes --no-rich-output
+
+      - name: Locate Inno Setup
+        id: inno
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+            $iscc = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw "Inno Setup 6 could not be installed on the runner." }
+          "path=$iscc" >> $env:GITHUB_OUTPUT
+
+      - name: Build installer and update manifest
+        shell: pwsh
+        run: |
+          & "${{ steps.inno.outputs.path }}" "/DAppBundleDir=${{ github.workspace }}\build\windows" installer\entp_installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass `
+            -File installer\create_update_manifest.ps1 `
+            -Version "2.1.3" `
+            -InstallerPath "release\ENTP-Manual-2.1.3-Setup.exe" `
+            -OutputPath "release\update.json"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ENTP-Manual-2.1.3-Windows
+          path: |
+            release/ENTP-Manual-2.1.3-Setup.exe
+            release/update.json
+          if-no-files-found: error
+
+      - name: Publish tagged release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title $tag --generate-notes
+          }
+          gh release upload $tag `
+            release\ENTP-Manual-2.1.3-Setup.exe `
+            release\update.json `
+            --clobber
