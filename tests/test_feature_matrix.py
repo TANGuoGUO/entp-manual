@@ -611,6 +611,20 @@ class MarkdownTests(TemporaryDatabaseTestCase):
         with self.assertRaisesRegex(ValueError, "格式无法识别"):
             self.markdown.add_image_bytes("task", task, b"not-an-image")
 
+    def test_MD_10_user_attachment_link_is_appended_outside_system_block(self) -> None:
+        task = self.db.create_task(self.db.current_mainline_id(), "图片不进入输入框")
+        self.markdown.sync_all(self.db)
+        addition = "![截图](../_assets/task/T0001/example.png)"
+
+        path = self.markdown.append_user_markdown("task", task, addition)
+        content = path.read_text(encoding="utf-8")
+        system, user = content.split(SYSTEM_END, 1)
+        self.assertNotIn(addition, system)
+        self.assertIn(addition, user)
+
+        self.markdown.append_user_markdown("task", task, addition)
+        self.assertEqual(path.read_text(encoding="utf-8").count(addition), 1)
+
 
 class RecoveryTests(TemporaryDatabaseTestCase):
     def test_ER_01_database_lock_fails_in_bounded_time(self) -> None:

@@ -189,6 +189,20 @@ class MarkdownStore:
         self._atomic_write_text(path, content)
         return path
 
+    def append_user_markdown(self, kind: str, object_id: int, addition: str) -> Path:
+        """Append user-owned Markdown without exposing or changing the system block."""
+        path = self.path_for(kind, object_id)
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        addition = addition.strip()
+        if not addition:
+            return path
+        user_content = existing.split(SYSTEM_END, 1)[-1] if SYSTEM_END in existing else existing
+        if addition in user_content:
+            return path
+        merged = existing.rstrip() + "\n\n" + addition + "\n"
+        self._atomic_write_text(path, merged)
+        return path
+
     def daily_path(self, day: str) -> Path:
         return self.root / "每日" / f"{day}.md"
 

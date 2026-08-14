@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import traceback
 from dataclasses import dataclass, asdict
@@ -143,17 +144,21 @@ class DesktopE2ERunner:
         dialog = captured[-1]
         self.ui._protect_control_tree(dialog)
         title = _find(dialog, ft.TextField, value="E2E 一次点击新增任务")
-        edit = _find(dialog, ft.TextButton, content="编辑")
-        edit.on_click(SimpleNamespace(control=edit))
         description = _find(
             dialog,
             ft.TextField,
-            hint_text="在这里记录，支持 Markdown，也可以直接粘贴截图……",
+            hint_text="在这里直接记录……",
         )
-        assert description.visible
+        assert description.visible and description.autofocus
+        assert not any(
+            getattr(control, "content", None) in {"编辑", "完成编辑", "正在编辑"}
+            for control in _walk(dialog)
+        )
         title.value = "E2E 已整理任务"
-        description.value = "## 背景\n\n从界面任务详情保存的 **重点**。"
-        description.on_blur(SimpleNamespace(control=description))
+        description.value = "从界面任务详情直接输入的背景。"
+        title.on_change(SimpleNamespace(control=title))
+        description.on_change(SimpleNamespace(control=description))
+        await asyncio.sleep(0.6)
         original_get_image = self.ui.clipboard.get_image
 
         async def clipboard_image():
@@ -161,24 +166,21 @@ class DesktopE2ERunner:
 
         self.ui.clipboard.get_image = clipboard_image
         try:
-            paste = _find(dialog, ft.TextButton, content="粘贴截图")
-            await paste.on_click(SimpleNamespace(control=paste))
+            await self.page.on_keyboard_event(SimpleNamespace(ctrl=True, key="V"))
         finally:
             self.ui.clipboard.get_image = original_get_image
-        finish = _find(dialog, ft.FilledTonalButton, content="完成编辑")
-        finish.on_click(SimpleNamespace(control=finish))
         task = self.ui.db.get_task(task_id)
         assert task["title"] == "E2E 已整理任务"
-        assert "从界面任务详情保存的 **重点**" in task["description"]
-        assert "![clipboard-" in task["description"]
+        assert task["description"] == "从界面任务详情直接输入的背景。"
         assert "从界面任务详情" in self.ui.markdown.read("task", task_id)
+        assert "![clipboard-" in self.ui.markdown.read("task", task_id)
+        assert any(isinstance(control, ft.Image) for control in _walk(dialog))
         assert any(
-            isinstance(control, ft.Markdown) and "## 背景" in str(control.value)
+            isinstance(control, ft.Text) and control.value == "图片已自动保存"
             for control in _walk(dialog)
         )
-        assert any(isinstance(control, ft.Image) for control in _walk(dialog))
         self.ui.close_task_detail()
-        return "任务弹窗直接渲染 Markdown；点击正文可编辑并粘贴截图，内容自动保存"
+        return "任务弹窗打开即可输入；停顿后自动保存，Ctrl+V 截图不暴露 Markdown 语法"
 
     def _focus_and_execute_task(self) -> str:
         task_id = int(self.context["task_id"])
