@@ -103,11 +103,40 @@ def pill(text: str, *, color: str = BLUE, bgcolor: str = BLUE_SOFT, icon=None) -
 
 def section_title(title: str, subtitle: str = "") -> ft.Row:
     controls: list[ft.Control] = [
-        ft.Text(title, size=20, weight=ft.FontWeight.W_700, color=INK)
+        ft.Text(title, size=19, weight=ft.FontWeight.W_700, color=INK)
     ]
     if subtitle:
         controls.append(ft.Text(subtitle, size=13, color=MUTED))
     return ft.Row(controls, spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+
+def quick_entry_icon(
+    icon,
+    *,
+    color: str = "#4F5560",
+    size: int = 20,
+    optical_y: float = 0.10,
+) -> ft.Container:
+    """Keep leading input icons optically centered at every Windows scale."""
+    return ft.Container(
+        content=ft.Icon(
+            icon,
+            size=size,
+            color=color,
+            offset=ft.Offset(0, optical_y),
+        ),
+        width=36,
+        height=44,
+        alignment=ft.Alignment.CENTER,
+    )
+
+
+QUICK_ENTRY_ICON_CONSTRAINTS = ft.BoxConstraints(
+    min_width=36,
+    max_width=36,
+    min_height=44,
+    max_height=44,
+)
 
 
 class EntpFletApp:
@@ -176,40 +205,54 @@ class EntpFletApp:
         self.inspiration_capture_open = False
         self.inline_inspiration_input = ft.TextField(
             hint_text="记下灵感，按回车收起",
-            hint_style=ft.TextStyle(size=15, color="#A9ADB6"),
-            prefix_icon=ft.Icons.LIGHTBULB_OUTLINE_ROUNDED,
+            hint_style=ft.TextStyle(size=16, color="#A9ADB6"),
+            prefix_icon=quick_entry_icon(
+                ft.Icons.LIGHTBULB_OUTLINE_ROUNDED,
+                color=AMBER,
+                size=19,
+                optical_y=0,
+            ),
+            prefix_icon_size_constraints=QUICK_ENTRY_ICON_CONSTRAINTS,
             border=ft.InputBorder.NONE,
             filled=True,
             fill_color=AMBER_SOFT,
-            text_size=15,
-            height=52,
-            content_padding=ft.Padding.symmetric(horizontal=7, vertical=12),
+            text_size=16,
+            text_vertical_align=ft.VerticalAlignment.CENTER,
+            dense=True,
+            height=48,
+            content_padding=ft.Padding.only(left=0, right=6, top=0, bottom=0),
             on_submit=self.quick_capture_inspiration,
         )
         self.idea_board_control: ft.Control | None = None
         self.quick_idea_input = ft.TextField(
             hint_text="记下一闪而过的想法…",
             hint_style=ft.TextStyle(size=16, color="#A9ADB6"),
-            prefix_icon=ft.Icons.ADD_ROUNDED,
+            prefix_icon=quick_entry_icon(ft.Icons.ADD_ROUNDED),
+            prefix_icon_size_constraints=QUICK_ENTRY_ICON_CONSTRAINTS,
             border=ft.InputBorder.NONE,
             filled=True,
             fill_color=SURFACE,
             text_size=16,
-            height=58,
-            content_padding=ft.Padding.symmetric(horizontal=8, vertical=14),
+            text_vertical_align=ft.VerticalAlignment.CENTER,
+            dense=True,
+            height=52,
+            content_padding=ft.Padding.only(left=0, right=6, top=0, bottom=0),
             on_submit=self.quick_add_idea,
         )
         self.quick_task_input = ft.TextField(
             hint_text="添加任务",
-            hint_style=ft.TextStyle(size=17, color="#B4B7BE"),
-            prefix_icon=ft.Icons.ADD_ROUNDED,
+            hint_style=ft.TextStyle(size=16, color="#B4B7BE"),
+            prefix_icon=quick_entry_icon(ft.Icons.ADD_ROUNDED),
+            prefix_icon_size_constraints=QUICK_ENTRY_ICON_CONSTRAINTS,
             border=ft.InputBorder.NONE,
             filled=True,
             fill_color=SURFACE,
             bgcolor=SURFACE,
-            content_padding=ft.Padding.symmetric(horizontal=8, vertical=15),
-            text_size=17,
-            height=60,
+            content_padding=ft.Padding.only(left=0, right=6, top=0, bottom=0),
+            text_size=16,
+            text_vertical_align=ft.VerticalAlignment.CENTER,
+            dense=True,
+            height=50,
             on_submit=self.quick_add_task,
         )
         self.quick_task_box = ft.Container(
@@ -219,36 +262,41 @@ class EntpFletApp:
                     ft.Container(
                         content=ft.Row(
                             [
-                                ft.Icon(ft.Icons.CALENDAR_MONTH_ROUNDED, size=20, color=BLUE),
-                                ft.Text("今天", size=16, color=BLUE),
-                                ft.Icon(ft.Icons.KEYBOARD_ARROW_DOWN_ROUNDED, size=21, color=MUTED),
+                                ft.Icon(ft.Icons.CALENDAR_MONTH_ROUNDED, size=18, color=BLUE),
+                                ft.Text("今天", size=15, color=BLUE),
+                                ft.Icon(ft.Icons.KEYBOARD_ARROW_DOWN_ROUNDED, size=18, color=MUTED),
                             ],
-                            spacing=7,
+                            spacing=5,
                             tight=True,
                         ),
-                        width=104,
+                        width=92,
+                        alignment=ft.Alignment.CENTER,
                     ),
                 ],
-                spacing=8,
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            padding=ft.Padding.only(left=8, right=18),
-            height=64,
+            padding=ft.Padding.only(left=8, right=14),
+            height=56,
             bgcolor=SURFACE,
             border=ft.Border.all(1, LINE),
-            border_radius=16,
+            border_radius=14,
         )
         self.quick_task_input.on_focus = lambda _: self._set_quick_input_focus_style(True)
         self.quick_task_input.on_blur = lambda _: self._set_quick_input_focus_style(False)
         self.quick_today_input = ft.TextField(
             hint_text='添加“今天”的任务至“收集箱”',
             hint_style=ft.TextStyle(size=16, color="#A9ADB6"),
-            prefix_icon=ft.Icons.ADD_ROUNDED,
+            prefix_icon=quick_entry_icon(ft.Icons.ADD_ROUNDED),
+            prefix_icon_size_constraints=QUICK_ENTRY_ICON_CONSTRAINTS,
             border=ft.InputBorder.NONE,
             filled=True,
             fill_color="#F4F6F9",
             text_size=16,
-            height=62,
-            content_padding=ft.Padding.symmetric(horizontal=9, vertical=14),
+            text_vertical_align=ft.VerticalAlignment.CENTER,
+            dense=True,
+            height=52,
+            content_padding=ft.Padding.only(left=0, right=6, top=0, bottom=0),
             on_submit=self.quick_add_today_task,
         )
         self.vault_holder = ft.Column(spacing=16)
@@ -1063,7 +1111,7 @@ class EntpFletApp:
     def _page_shell(self, content: ft.Control) -> ft.Container:
         return ft.Container(
             content=content,
-            padding=ft.Padding.symmetric(horizontal=26, vertical=26),
+            padding=ft.Padding.symmetric(horizontal=22, vertical=22),
             expand=True,
         )
 
@@ -1071,7 +1119,7 @@ class EntpFletApp:
         left = ft.Container(
             content=ft.Column(
                 [self.quick_task_box, self.focus_holder, self.task_holder],
-                spacing=18,
+                spacing=14,
                 scroll=ft.ScrollMode.AUTO,
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             ),
@@ -1106,7 +1154,7 @@ class EntpFletApp:
                     self.current_header,
                     task_calendar_layout,
                 ],
-                spacing=26,
+                spacing=20,
                 scroll=ft.ScrollMode.AUTO,
             )
         )
@@ -1122,14 +1170,14 @@ class EntpFletApp:
                     ft.Column(
                         [
                             ft.Text("当前主线", size=13, weight=ft.FontWeight.W_700, color=BLUE),
-                            ft.Text(str(mainline["name"]), size=28, weight=ft.FontWeight.W_700, color=INK),
+                            ft.Text(str(mainline["name"]), size=26, weight=ft.FontWeight.W_700, color=INK),
                             ft.Text(
                                 str(mainline["vision"] or ""),
                                 size=15,
                                 color=MUTED,
                             ),
                         ],
-                        spacing=8,
+                        spacing=6,
                         expand=True,
                     ),
                 ],
@@ -1166,14 +1214,14 @@ class EntpFletApp:
                             on_click=self.open_inline_inspiration,
                         style=ft.ButtonStyle(
                             shape=rounded(13),
-                            padding=18,
+                            padding=ft.Padding.symmetric(horizontal=14, vertical=10),
                             color=AMBER,
                             side=ft.BorderSide(1, "#F0D8A1"),
                         ),
                     ),
                     *([self._inline_inspiration_capture()] if self.inspiration_capture_open else []),
                 ],
-                spacing=14,
+                spacing=12,
             )
         else:
             task_id = int(focus["id"])
@@ -1214,7 +1262,7 @@ class EntpFletApp:
                                 ),
                             ]
                         ),
-                        padding=16,
+                        padding=14,
                         bgcolor=BLUE_SOFT,
                         border_radius=14,
                     ),
@@ -1224,13 +1272,23 @@ class EntpFletApp:
                                 "记录一次执行",
                                 icon=ft.Icons.ADD_TASK_ROUNDED,
                                 on_click=lambda _: self.open_execution_dialog(task_id),
-                                style=ft.ButtonStyle(shape=rounded(13), padding=18, bgcolor=BLUE, color=ft.Colors.WHITE),
+                                style=ft.ButtonStyle(
+                                    shape=rounded(12),
+                                    padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+                                    bgcolor=BLUE,
+                                    color=ft.Colors.WHITE,
+                                ),
                             ),
                             ft.OutlinedButton(
                                 "没动力了",
                                 icon=ft.Icons.AUTO_AWESOME_ROUNDED,
                                 on_click=lambda _: self.open_stuck_dialog(task_id),
-                                style=ft.ButtonStyle(shape=rounded(13), padding=18, color=INK, side=ft.BorderSide(1, LINE)),
+                                style=ft.ButtonStyle(
+                                    shape=rounded(12),
+                                    padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+                                    color=INK,
+                                    side=ft.BorderSide(1, LINE),
+                                ),
                             ),
                             ft.OutlinedButton(
                                 "暂存新灵感",
@@ -1238,7 +1296,7 @@ class EntpFletApp:
                                 on_click=self.open_inline_inspiration,
                                 style=ft.ButtonStyle(
                                     shape=rounded(13),
-                                    padding=18,
+                                    padding=ft.Padding.symmetric(horizontal=14, vertical=10),
                                     color=AMBER,
                                     side=ft.BorderSide(1, "#F0D8A1"),
                                 ),
@@ -1249,13 +1307,13 @@ class EntpFletApp:
                     ),
                     *([self._inline_inspiration_capture()] if self.inspiration_capture_open else []),
                 ],
-                spacing=16,
+                spacing=14,
             )
         return ft.Card(
-            content=ft.Container(body, padding=24),
+            content=ft.Container(body, padding=20),
             elevation=0,
             bgcolor=SURFACE,
-            shape=rounded(20),
+            shape=rounded(18),
             variant=ft.CardVariant.OUTLINED,
         )
 
@@ -1316,7 +1374,7 @@ class EntpFletApp:
                 ),
                 subtitle=ft.Text(
                     status_hint,
-                    size=13,
+                    size=12,
                     color="#B3B6BD" if completed else MUTED,
                 ),
                 trailing=ft.Row(
@@ -1332,12 +1390,12 @@ class EntpFletApp:
                     spacing=2,
                     tight=True,
                 ),
-                content_padding=ft.Padding.symmetric(horizontal=12, vertical=11),
-                min_height=92,
+                content_padding=ft.Padding.symmetric(horizontal=10, vertical=7),
+                min_height=78,
                 on_click=lambda _, tid=task_id: self.select_task(tid),
             ),
             bgcolor="#F1F2F4" if selected else ("#FAFAFB" if completed else SURFACE),
-            border_radius=14 if selected else 0,
+            border_radius=12 if selected else 0,
             animate=120,
         )
         return ft.Column(
@@ -1713,16 +1771,16 @@ class EntpFletApp:
                             bgcolor=AMBER,
                             color=ft.Colors.WHITE,
                             shape=rounded(12),
-                            padding=ft.Padding.symmetric(horizontal=18, vertical=16),
+                            padding=ft.Padding.symmetric(horizontal=15, vertical=11),
                         ),
                     ),
                 ],
                 spacing=8,
             ),
-            padding=ft.Padding.only(left=5, right=8),
+            padding=ft.Padding.only(left=4, right=6),
             bgcolor=SURFACE,
             border=ft.Border.all(1, LINE),
-            border_radius=16,
+            border_radius=14,
         )
         return self._page_shell(
             ft.Column(
@@ -2770,10 +2828,10 @@ class EntpFletApp:
             [
                 ft.Row(
                     [
-                        ft.Icon(ft.Icons.CHECKLIST_ROUNDED, size=28, color=MUTED),
+                        ft.Icon(ft.Icons.CHECKLIST_ROUNDED, size=24, color=MUTED),
                         ft.Text(
                             self._format_day_heading(self.selected_day),
-                            size=30,
+                            size=27,
                             weight=ft.FontWeight.W_700,
                             color=INK,
                         ),
@@ -2843,7 +2901,7 @@ class EntpFletApp:
             input_or_history: ft.Control = ft.Container(
                 self.quick_today_input,
                 bgcolor="#F4F6F9",
-                border_radius=16,
+                border_radius=14,
             )
         else:
             summary = self.db.daily_summary(selected_iso)
@@ -2932,7 +2990,7 @@ class EntpFletApp:
         body = ft.Container(
             content=ft.Column(
                 [self._today_header(), input_or_history, *groups],
-                spacing=18,
+                spacing=14,
                 scroll=ft.ScrollMode.AUTO,
                 horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
             ),
@@ -2963,10 +3021,10 @@ class EntpFletApp:
                 ft.Icons.CHEVRON_RIGHT_ROUNDED if collapsed else ft.Icons.EXPAND_MORE_ROUNDED,
                 tooltip="展开" if collapsed else "收起",
                 icon_color="#9CA1AA",
-                icon_size=20,
+                icon_size=18,
                 on_click=lambda _, group=title: self.toggle_today_group(group),
             ),
-            ft.Text(title, size=19, weight=ft.FontWeight.W_700, color=INK),
+            ft.Text(title, size=17, weight=ft.FontWeight.W_700, color=INK),
             ft.Text(str(len(entries)), size=14, color="#9CA1AA"),
             ft.Container(expand=True),
         ]
@@ -3091,8 +3149,8 @@ class EntpFletApp:
                 spacing=10,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            height=68,
-            padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+            height=58,
+            padding=ft.Padding.symmetric(horizontal=8, vertical=4),
             border=ft.Border.only(bottom=ft.BorderSide(1, LINE)),
         )
 
@@ -3164,7 +3222,7 @@ class EntpFletApp:
             [
                 ft.Column(
                     [
-                        ft.Text("完成日历", size=30, weight=ft.FontWeight.W_700, color=INK),
+                        ft.Text("完成日历", size=27, weight=ft.FontWeight.W_700, color=INK),
                         ft.Text(
                             "只记录现实发生过的完成事实，不计算连续天数。",
                             size=15,
@@ -3207,7 +3265,7 @@ class EntpFletApp:
         body = ft.Container(
             ft.Column(
                 [header, ft.ResponsiveRow([left, right], spacing=18, run_spacing=18)],
-                spacing=24,
+                spacing=18,
                 scroll=ft.ScrollMode.AUTO,
             ),
             expand=True,
@@ -3231,7 +3289,7 @@ class EntpFletApp:
         for week in weeks:
             for day_num in week:
                 if not day_num:
-                    cells.append(ft.Container(height=66, col=1))
+                    cells.append(ft.Container(height=58, col=1))
                     continue
                 value = date(month.year, month.month, day_num)
                 day_iso = value.isoformat()
@@ -3267,11 +3325,11 @@ class EntpFletApp:
                             alignment=ft.MainAxisAlignment.CENTER,
                             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                         ),
-                        height=66,
+                        height=58,
                         col=1,
                         bgcolor=BLUE if selected else GREEN_SOFT if count else "#00000000",
                         border=ft.Border.all(1, BLUE_SOFT if is_today and not selected else "#00000000"),
-                        border_radius=14,
+                        border_radius=12,
                         tooltip=f"{day_iso} · 完成 {count} 项" if count else day_iso,
                         on_click=(
                             None
@@ -4035,8 +4093,6 @@ def main() -> None:
             if args.updated:
                 ui._notify_success(f"已更新到 {APP_VERSION}")
             if args.qa_window_state_report:
-                import asyncio
-
                 await asyncio.sleep(0.5)
                 report_path = args.qa_window_state_report.resolve()
                 report_path.parent.mkdir(parents=True, exist_ok=True)

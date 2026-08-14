@@ -1,58 +1,67 @@
-# ENTP 自强手册：今日清单与完成日历 Design QA
+# 界面密度与输入入口视觉 QA
 
-## Source visual truth
+## 对比依据
 
-- 今日清单参考：`G:\project\entp\designs\reference-ticktick-today-list.png`
-- 完成日历参考：`G:\project\entp\designs\entp-self-help-2.0-mainline-tasks-calendar.png`
-- 完整并排对照：`G:\project\entp\designs\flet-2.5-daily-calendar-comparison.png`
+- 参考全屏：`C:\Users\25244\AppData\Local\Temp\codex-clipboard-0b405dd6-b7d8-4305-900a-4afcdafbf68b.png`
+- 参考输入框：`C:\Users\25244\AppData\Local\Temp\codex-clipboard-c4e751c9-3fe1-4e81-9727-8f32d7f5773e.png`
+- 最终当前主线：`G:\project\entp\outputs\ui-density-final-visual.png`
+- 最终候审区：`G:\project\entp\outputs\ui-density-final-ideas.png`
+- 最终今日清单：`G:\project\entp\outputs\ui-density-final-today.png`
+- 最终紧凑窗口：`G:\project\entp\outputs\ui-density-final-compact.png`
+- 同屏对比：`G:\project\entp\outputs\ui-density-comparison.png`
 
-## Implementation evidence
+## 视口与归一化
 
-- 今日清单宽屏：`G:\project\entp\designs\flet-2.5-today-final.png`
-- 今日清单窄屏：`G:\project\entp\designs\flet-2.5-today-compact-fixed.png`
-- 历史日期账本：`G:\project\entp\designs\flet-2.5-daily-history.png`
-- 完成日历宽屏：`G:\project\entp\designs\flet-2.5-calendar-final.png`
-- 完成日历窄屏：`G:\project\entp\designs\flet-2.5-calendar-compact.png`
+- 参考全屏像素：1737 × 1307。
+- 参考输入框像素：1270 × 227。
+- 最终桌面截图像素：1463 × 752；Flet 页面为 1462.86 × 752 CSS px，截图比例为 1.0。
+- 紧凑窗口：920 × 720；Flet 页面为 906.29 × 683.43 CSS px，截图比例为 1.0。
+- 同屏对比图将参考和实现按各自比例放入等宽区域，没有拉伸。输入框采用局部裁切，重点比较高度、图标位置、字号和左右留白。参考来自滴答清单，产品结构不同，因此不把侧栏数量和业务内容当作需要复制的差异。
 
-## Viewport and normalization
+## 状态
 
-- Today source: 1055 × 859 px.
-- Calendar source: 1487 × 1058 px.
-- Wide implementation captures: 1463 × 752 px at pixel ratio 1.0.
-- Compact implementation captures: 907 × 684 px at pixel ratio 1.0; requested window 920 × 720.
-- The comparison board proportionally contains each full native capture in equal 720 × 430 cells. It is used to judge hierarchy and visual language, not pixel-identical content placement across different source viewports.
-- State: current date 2026-08-13; calendar detail comparison selects 2026-08-12 with one completed item, matching the source's selected-day completion state.
+- 当前主线：输入框获得焦点，展示焦点边框、加号、光标和日期入口。
+- 候审区：展示快速灵感输入和三列灵感状态。
+- 今日清单：展示快速添加入口、进行中任务、已完成任务。
+- 紧凑窗口：920 × 720，右侧完成日历自动换行到主内容下方。
 
-## Findings
+## 全屏对比
 
-- No remaining P0/P1/P2 mismatch.
-- Information architecture: the implementation preserves the reference hierarchy of title → direct input → overdue/today/completed groups. Calendar preserves month overview → selected-day completion details.
-- Fonts and typography: Microsoft YaHei UI, 30 px page title, 19 px group title, 16 px task title, and 12–15 px metadata remain readable at both tested widths. Completed items use reduced contrast without becoming illegible.
-- Spacing and layout rhythm: today rows remain flat with divider lines rather than excessive boxed cards. Input and history banner use 14–16 px radii. Calendar uses two outlined 20 px radius surfaces on wide screens and stacks them on compact screens.
-- Colors and visual tokens: blue remains the navigation and selection color, green denotes recorded completion facts, red denotes overdue dates, and neutral gray carries metadata. The palette matches the existing Flet 2.0 shell.
-- Image quality and assets: no raster product assets are required. All controls use Flet's Material icon library; no emoji, handcrafted SVG, or placeholder art is used.
-- Copy and content: “顺延到今天”, “历史账本”, “后续改名不会覆盖这里”, and “不计算连续天数” communicate the product's date semantics directly.
-- Responsiveness: at 920 × 720 the today list keeps all header actions visible. The calendar and selected-day detail change from side-by-side to vertical flow and remain scrollable.
-- Interaction: quick task entry, complete/reopen, overdue carry, day navigation, priority sorting, group collapse, month navigation, selected-day detail, and entry into a historical ledger are connected to SQLite data.
+- 信息密度：实现中的主输入、卡片、任务行和标题已经收敛到参考的紧凑层级；主任务区不再被大块控件挤压。
+- 响应式：宽屏保持双栏；920 px 下日历下移，输入入口和主操作没有横向溢出。
+- 产品差异：参考是滴答清单的多清单工作台；实现保留“当前主线 + 完成日历”的业务结构，这是预期差异。
 
-## Comparison history
+## 输入框局部对比
 
-1. P2 compact overflow: the first compact capture used a fixed 1120 px content width, clipping header actions and row metadata.
-   - Fix: replaced fixed page widths with expanding constrained content inside the existing padded shell.
-   - Post-fix evidence: `G:\project\entp\designs\flet-2.5-today-compact-fixed.png`.
-2. P1 completion-history loss: completion calendar originally depended on the daily entry's current state, so reopening could remove a past completion from the calendar.
-   - Fix: calendar and history summaries now derive completion facts from append-only `task_events`; the daily entry still represents current task state.
-   - Post-fix evidence: `G:\project\entp\tests\test_daily_ledger.py` and `G:\project\entp\designs\flet-2.5-calendar-final.png`.
+- 加号使用固定 36 × 44 图标槽，并增加约 2 px 的光学校正；当前主线、候审区和今日清单三个入口均在容器中视觉居中。
+- 当前主线输入框由 64 px 降至 56 px；候审区由 58 px 降至 52 px；今日入口由 62 px 降至 52 px。
+- 输入正文仍保持 16 px，没有用牺牲可读性换取紧凑感。
+- 日历、日期文字和箭头统一缩小，并保持同一垂直中心线。
 
-## Verification
+## 必查表面
 
-- Python compilation passed for `flet_app.py`, `database.py`, `markdown_store.py`, and the daily-ledger test.
-- Daily snapshot, rename immutability, complete/reopen fact retention, overdue carry idempotency, and Markdown daily document tests passed.
-- Existing archive/restore regression test still passes.
-- Native wide and compact Flet captures contain no clipped primary controls or broken text.
+- 字体与层级：正文和输入维持 16 px；仅标题、辅助文字和容器层级适度收紧。没有出现难读的小字号或异常换行。
+- 间距与节奏：页面边距、区块间距、焦点卡片内边距、按钮高度、任务行和日历格均缩小；宽屏和紧凑窗口节奏一致。
+- 色彩：保留原有蓝色焦点、琥珀色灵感和绿色完成语义，没有改变对比度。
+- 图标与图像：继续使用 Flet Material 图标和现有品牌 Logo；没有占位图、拉伸或模糊资源。
+- 文案：没有修改产品文案和功能含义。
 
-## Follow-up polish
+## 对比历史
 
-- P3: on the minimum compact window, selected-day calendar details are below the month grid and require scrolling. This is intentional to preserve readable date cells and task text.
+1. 初始发现（P2）：TextField 默认前缀槽受 Material 内边距影响，加号在高输入框中显得偏上；64/62/58 px 的输入入口和 92 px 任务行过于厚重。
+2. 第一轮修正：建立固定图标槽，缩小输入框、按钮、焦点卡片、任务行和日历格，同时保留 16 px 输入及正文。
+3. 第二轮检查（P3）：加号与文字已对齐，但相对外框中心仍有约 2 px 的视觉偏差。
+4. 最终修正：为加号加入 0.10 的垂直光学位移，并重新捕获当前主线、候审区、今日清单和紧凑窗口。
+
+## 测试结果
+
+- 单元与功能测试：82 / 82 通过。
+- 标准桌面 E2E：16 个 E2E + 2 个数据契约通过，0 失败。
+- 920 × 720 响应式 E2E：16 个 E2E + 2 个数据契约通过，0 失败。
+- 说明：首次紧凑 E2E 使用了残留测试数据库，备份回滚用例检测到旧临时任务；换用全新数据库后通过，确认并非本次 UI 改动造成。
+
+## 结论
+
+没有剩余 P0、P1 或 P2 问题。后续如果继续追求更接近滴答清单，可在不降低正文字号的前提下微调侧栏图标密度，属于 P3 级视觉润色。
 
 final result: passed
