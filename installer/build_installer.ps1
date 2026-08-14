@@ -18,8 +18,8 @@ try {
         --add-data "assets:assets" `
         --product-name "ENTP Manual" `
         --file-description "Curiosity Momentum Loop" `
-        --product-version "2.1.0" `
-        --file-version "2.1.0.0" `
+        --product-version "2.1.1" `
+        --file-version "2.1.1.0" `
         --company-name "ENTP Manual" -y
     if ($LASTEXITCODE -ne 0) { throw "EXE packaging failed: $LASTEXITCODE" }
 
@@ -27,13 +27,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Installer build failed: $LASTEXITCODE" }
 
     $BuiltInstaller = Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "release") `
-        -Filter "*2.1.0*.exe" | Where-Object { $_.Name -ne "ENTPManual.exe" } | `
+        -Filter "*2.1.1*.exe" | Where-Object { $_.Name -ne "ENTPManual.exe" } | `
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $BuiltInstaller) { throw "Built installer was not found." }
 
     & powershell.exe -NoProfile -ExecutionPolicy Bypass `
         -File (Join-Path $PSScriptRoot "create_update_manifest.ps1") `
-        -Version "2.1.0" `
+        -Version "2.1.1" `
         -InstallerPath $BuiltInstaller.FullName `
         -OutputPath (Join-Path $ProjectRoot "release\update.json")
     if ($LASTEXITCODE -ne 0) { throw "Update manifest generation failed: $LASTEXITCODE" }

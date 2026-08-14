@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.1.0-Setup.exe">下载 Windows 安装版</a>
+  <a href="https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.1.1-Setup.exe">下载 Windows 安装版</a>
   ·
   <a href="https://github.com/TANGuoGUO/entp-manual/releases/latest">版本说明</a>
   ·
@@ -169,7 +169,7 @@ markdown/
 
 ## 下载和安装
 
-[直接下载 Windows 安装版](https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.1.0-Setup.exe)
+[直接下载 Windows 安装版](https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.1.1-Setup.exe)
 
 安装时可以选择安装目录、桌面快捷方式，以及是否在登录 Windows 后于后台启动。程序支持系统托盘隐藏和标准 Windows 卸载。
 
