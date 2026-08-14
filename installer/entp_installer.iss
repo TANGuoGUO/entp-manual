@@ -1,8 +1,11 @@
 #define MyAppName "ENTP 自强手册"
-#define MyAppVersion "2.1.2"
+#define MyAppVersion "2.1.3"
 #define MyAppPublisher "ENTP Manual"
 #define MyAppExeName "ENTPManual.exe"
 #define MyTaskName "ENTPManual_Autostart"
+#ifndef AppBundleDir
+#define AppBundleDir "..\build\windows"
+#endif
 
 [Setup]
 AppId={{F5E43EE6-9742-4B20-910B-38FC50C21655}
@@ -14,7 +17,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 OutputDir=..\release
-OutputBaseFilename=ENTP自强手册_2.1.2_初始化版
+OutputBaseFilename=ENTP-Manual-2.1.3-Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -32,7 +35,7 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Name: "autostart"; Description: "登录 Windows 后在后台启动（隐藏任务栏图标，使用任务计划程序）"; GroupDescription: "自动启动："; Flags: unchecked
 
 [Files]
-Source: "..\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#AppBundleDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"

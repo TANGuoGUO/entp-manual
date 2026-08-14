@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import flet as ft
+from flet_quill_editor import FletQuillEditor
 
 try:
     import pystray
@@ -54,7 +55,14 @@ if os.name == "nt":
 
 
 SOURCE_ROOT = Path(__file__).resolve().parent
-if getattr(sys, "frozen", False):
+flet_storage_data = os.environ.get("FLET_APP_STORAGE_DATA")
+if flet_storage_data:
+    # Native Flet builds keep the application bundle read-only and expose a
+    # durable per-user data directory through this environment variable.
+    ROOT = Path(flet_storage_data).resolve()
+    ROOT.mkdir(parents=True, exist_ok=True)
+    RESOURCE_ROOT = SOURCE_ROOT
+elif getattr(sys, "frozen", False):
     # Installed builds may live below Program Files, which is not writable by
     # a standard user. Keep personal data in LocalAppData and load bundled
     # resources from PyInstaller's extraction directory.
@@ -1414,8 +1422,13 @@ class EntpFletApp:
         task_id = int(task["id"])
         completed = str(task["status"]) == "完成"
         focused = bool(task["is_focus"])
-        state = {"body_focused": True, "autosave_revision": 0}
-        previous_keyboard_handler = self.page.on_keyboard_event
+        initial_description = self.markdown.editor_body_with_legacy_images(
+            "task", task_id, str(task["description"] or "")
+        )
+        state = {
+            "description": initial_description,
+            "autosave_revision": 0,
+        }
         title_field = ft.TextField(
             value=str(task["title"]),
             border=ft.InputBorder.NONE,
@@ -1423,36 +1436,30 @@ class EntpFletApp:
             text_style=ft.TextStyle(weight=ft.FontWeight.W_700, color=INK),
             content_padding=0,
         )
-        description_field = ft.TextField(
-            value=str(task["description"] or ""),
-            hint_text="在这里直接记录……",
-            hint_style=ft.TextStyle(size=15, color="#B3B6BD"),
-            border=ft.InputBorder.NONE,
-            multiline=True,
-            min_lines=12,
-            max_lines=18,
+        document_path = self.markdown.path_for("task", task_id)
+        image_directory, image_link_prefix = self.markdown.editor_image_context(
+            "task", task_id
+        )
+        description_editor = FletQuillEditor(
+            value=initial_description,
+            placeholder="在这里直接记录……",
+            document_directory=str(document_path.parent.resolve()),
+            image_directory=str(image_directory.resolve()),
+            image_link_prefix=image_link_prefix,
             text_size=16,
-            text_style=ft.TextStyle(font_family="Microsoft YaHei UI", height=1.5),
-            content_padding=0,
             expand=True,
             autofocus=True,
-        )
-        image_gallery = ft.Row(spacing=10, scroll=ft.ScrollMode.AUTO)
-        gallery_section = ft.Column(
-            [image_gallery],
-            spacing=0,
-            visible=False,
         )
         save_status = ft.Text("已自动保存", size=12, color=MUTED)
 
         last_saved = {
             "title": str(task["title"]),
-            "description": str(task["description"] or ""),
+            "description": initial_description,
         }
 
         def save_fields(_=None) -> None:
             title = str(title_field.value or "").strip() or str(task["title"])
-            description = str(description_field.value or "")
+            description = str(state["description"])
             if title == last_saved["title"] and description == last_saved["description"]:
                 save_status.value = "已自动保存"
                 return
@@ -1470,107 +1477,13 @@ class EntpFletApp:
             save_fields()
             self.page.update()
 
-        def schedule_autosave(_) -> None:
+        def schedule_autosave(event) -> None:
+            if event is not None and getattr(event, "data", None) is not None:
+                state["description"] = str(event.data)
             state["autosave_revision"] += 1
             save_status.value = "正在自动保存…"
             self.page.update()
             self.page.run_task(delayed_autosave, state["autosave_revision"])
-
-        def render_gallery() -> None:
-            content = self.markdown.read("task", task_id)
-            images = self.markdown.image_paths("task", task_id, content)
-            unique_images = list(dict.fromkeys(images))
-            controls: list[ft.Control] = []
-            for image_path in unique_images:
-                try:
-                    image_bytes = image_path.read_bytes()
-                except OSError:
-                    continue
-                controls.append(
-                    ft.Container(
-                        content=ft.Image(
-                            src=image_bytes,
-                            width=180,
-                            height=118,
-                            fit=ft.BoxFit.CONTAIN,
-                            border_radius=10,
-                        ),
-                        width=192,
-                        height=130,
-                        padding=6,
-                        bgcolor="#F7F8FA",
-                        border_radius=12,
-                        border=ft.Border.all(1, LINE),
-                    )
-                )
-            image_gallery.controls = controls
-            gallery_section.visible = bool(controls)
-
-        def attach_image(image_path: Path, relative: str) -> None:
-            self.markdown.append_user_markdown(
-                "task",
-                task_id,
-                f"![{image_path.stem}]({relative})",
-            )
-            render_gallery()
-            save_status.value = "图片已自动保存"
-            self.page.update()
-
-        async def insert_task_images(_) -> None:
-            files = await self.file_picker.pick_files(
-                dialog_title="插入任务图片",
-                file_type=ft.FilePickerFileType.CUSTOM,
-                allowed_extensions=["png", "jpg", "jpeg", "gif", "webp", "bmp"],
-                allow_multiple=True,
-            )
-            if not files:
-                return
-            for selected in files:
-                selected_path = getattr(selected, "path", None)
-                if not selected_path:
-                    raise OSError("无法读取所选图片的本地路径")
-                image_path, relative = self.markdown.add_image("task", task_id, selected_path)
-                attach_image(image_path, relative)
-
-        async def paste_task_image(_=None, *, quiet: bool = False) -> bool:
-            try:
-                image_bytes = await self.clipboard.get_image()
-                if not image_bytes:
-                    if not quiet:
-                        self.page.show_dialog(
-                            ft.SnackBar(content=ft.Text("剪贴板里没有图片。先复制或截图，再来粘贴。"))
-                        )
-                    return False
-                image_path, relative = self.markdown.add_image_bytes(
-                    "task",
-                    task_id,
-                    image_bytes,
-                    stem=datetime.now().strftime("clipboard-%Y%m%d-%H%M%S"),
-                )
-                attach_image(image_path, relative)
-                return True
-            except Exception as error:
-                self._write_runtime_error("粘贴任务图片失败", traceback.format_exc())
-                if not quiet:
-                    self._notify_error(f"图片粘贴失败：{error}")
-                return False
-
-        async def handle_task_shortcut(event: ft.KeyboardEvent) -> None:
-            if state["body_focused"] and event.ctrl and str(event.key).lower() == "v":
-                await paste_task_image(quiet=True)
-                return
-            if previous_keyboard_handler is not None:
-                result = previous_keyboard_handler(event)
-                if inspect.isawaitable(result):
-                    await result
-
-        render_gallery()
-
-        def restore_keyboard_handler() -> None:
-            self.page.on_keyboard_event = previous_keyboard_handler
-
-        self._task_detail_keyboard_restore = restore_keyboard_handler
-        self.page.on_keyboard_event = handle_task_shortcut
 
         def close_detail(_) -> None:
             save_fields(None)
@@ -1589,18 +1502,13 @@ class EntpFletApp:
             save_fields(None)
             self._finish_task_detail_state()
 
-        def description_focus(_) -> None:
-            state["body_focused"] = True
-
         def description_blur(_) -> None:
-            state["body_focused"] = False
             save_fields(None)
 
         title_field.on_blur = save_fields
         title_field.on_change = schedule_autosave
-        description_field.on_focus = description_focus
-        description_field.on_blur = description_blur
-        description_field.on_change = schedule_autosave
+        description_editor.on_blur = description_blur
+        description_editor.on_change = schedule_autosave
 
         header = ft.Container(
             content=ft.Row(
@@ -1639,8 +1547,7 @@ class EntpFletApp:
             content=ft.Column(
                 [
                     title_field,
-                    description_field,
-                    gallery_section,
+                    description_editor,
                 ],
                 spacing=10,
                 expand=True,
@@ -1658,19 +1565,7 @@ class EntpFletApp:
                         ],
                         spacing=6,
                     ),
-                    ft.Row(
-                        [
-                            ft.IconButton(
-                                ft.Icons.ADD_PHOTO_ALTERNATE_OUTLINED,
-                                tooltip="插入图片",
-                                icon_size=18,
-                                icon_color=MUTED,
-                                on_click=insert_task_images,
-                            ),
-                            ft.Text("Ctrl+V 可粘贴截图", size=12, color=MUTED),
-                        ],
-                        spacing=2,
-                    ),
+                    ft.Text("可直接粘贴文字或图片", size=12, color=MUTED),
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             ),

@@ -1,0 +1,26 @@
+[project]
+name = "entp-manual"
+version = "2.1.3"
+description = "ENTP 自强手册"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "flet[all]==0.86.5",
+    "Pillow==12.3.0",
+    "pystray==0.19.5",
+    "flet-quill-editor",
+]
+
+[tool.flet]
+org = "com.entpmanual"
+product = "ENTP 自强手册"
+company = "ENTP Manual"
+copyright = "Copyright (C) 2026 ENTP Manual"
+
+[tool.flet.app]
+path = "."
+
+[tool.flet.dev_packages]
+flet-quill-editor = "extensions/flet_quill_editor"
+
+[tool.uv.sources]
+flet-quill-editor = { path = "extensions/flet_quill_editor", editable = true }

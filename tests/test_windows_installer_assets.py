@@ -11,12 +11,17 @@ class WindowsInstallerAssetTests(unittest.TestCase):
     def test_app_icon_assets_are_valid(self) -> None:
         png_path = ROOT / "assets" / "app-icon.png"
         ico_path = ROOT / "assets" / "app-icon.ico"
+        flet_windows_icon_path = ROOT / "assets" / "icon_windows.ico"
         self.assertTrue(png_path.is_file())
         self.assertTrue(ico_path.is_file())
+        self.assertTrue(flet_windows_icon_path.is_file())
         with Image.open(png_path) as image:
             self.assertEqual(image.width, image.height)
             self.assertGreaterEqual(image.width, 512)
         with Image.open(ico_path) as image:
+            self.assertEqual(image.format, "ICO")
+            self.assertIn((256, 256), image.info.get("sizes", set()))
+        with Image.open(flet_windows_icon_path) as image:
             self.assertEqual(image.format, "ICO")
             self.assertIn((256, 256), image.info.get("sizes", set()))
 
@@ -27,7 +32,7 @@ class WindowsInstallerAssetTests(unittest.TestCase):
         self.assertIn("SetupIconFile=..\\assets\\app-icon.ico", script)
         self.assertIn('Name: "{group}\\卸载 {#MyAppName}"', script)
         self.assertIn('Filename: "{uninstallexe}"', script)
-        self.assertIn('--icon "assets\\app-icon.ico"', build)
+        self.assertNotIn('--icon ', build)
         self.assertIn('release\\update.json', build)
         self.assertIn('Get-FileHash', manifest)
         self.assertIn('sha256', manifest)

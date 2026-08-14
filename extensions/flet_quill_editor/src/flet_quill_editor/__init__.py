@@ -1,0 +1,1 @@
+from flet_quill_editor.flet_quill_editor import FletQuillEditor

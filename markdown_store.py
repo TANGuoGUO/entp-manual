@@ -59,6 +59,36 @@ class MarkdownStore:
     def relative_path_for(self, kind: str, object_id: int) -> str:
         return self.path_for(kind, object_id).relative_to(self.root).as_posix()
 
+    def editor_image_context(self, kind: str, object_id: int) -> tuple[Path, str]:
+        """Return the durable image directory and its Markdown link prefix."""
+        document = self.path_for(kind, object_id)
+        _directory, prefix = KIND_INFO[kind]
+        attachment_dir = self.root / "_assets" / kind / f"{prefix}{int(object_id):04d}"
+        attachment_dir.mkdir(parents=True, exist_ok=True)
+        relative = os.path.relpath(attachment_dir, document.parent).replace(os.sep, "/")
+        return attachment_dir, relative
+
+    def editor_body_with_legacy_images(
+        self, kind: str, object_id: int, body: str
+    ) -> str:
+        """Bring images added by the former bottom gallery into the editor body.
+
+        The old UI appended image links below the system block without storing
+        them in the task description. Their original cursor position was never
+        recorded, so the only lossless migration is to append each missing link
+        once. New Quill pastes are stored at their actual cursor position.
+        """
+        content = self.read(kind, object_id)
+        missing = [
+            match.group(0)
+            for match in MARKDOWN_IMAGE_PATTERN.finditer(content)
+            if match.group(0) not in body
+        ]
+        if not missing:
+            return body
+        parts = [body.rstrip(), *missing]
+        return "\n\n".join(part for part in parts if part).strip()
+
     def read(self, kind: str, object_id: int) -> str:
         path = self.path_for(kind, object_id)
         return path.read_text(encoding="utf-8") if path.exists() else ""

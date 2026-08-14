@@ -1,0 +1,26 @@
+name: flet_quill_editor
+description: Flet FletQuillEditor control
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: '>=3.12.0 <4.0.0'
+  flutter: ">=3.44.0"
+
+dependencies:
+  flet: ^0.86.5
+  flutter:
+    sdk: flutter
+  flutter_quill: 11.5.1
+  flutter_quill_extensions: 11.0.0
+  markdown: ^7.2.1
+  markdown_quill: 4.3.0
+  path: ^1.9.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true

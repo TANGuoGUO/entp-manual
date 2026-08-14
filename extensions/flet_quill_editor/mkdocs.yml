@@ -1,0 +1,7 @@
+site_name: FletQuillEditor
+
+theme:
+  name: "material"
+
+plugins:
+  - mkdocstrings

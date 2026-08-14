@@ -1,0 +1,44 @@
+[project]
+name = "flet-quill-editor-example"
+version = "1.0.0"
+description = ""
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Flet developer", email = "you@example.com" }
+]
+dependencies = [
+    "flet-quill-editor",
+    "flet>=0.86.5",
+]
+
+[dependency-groups]
+dev = [
+    "flet-cli>=0.86.5",
+    "flet-desktop>=0.86.5",
+    "flet-web>=0.86.5",
+]
+
+[tool.flet]
+# org name in reverse domain name notation, e.g. "com.mycompany".
+# Combined with project.name to build bundle ID for iOS and Android apps
+org = "com.mycompany"
+
+# project display name that is used as an app title on Android and iOS home screens,
+# shown in window titles and about app dialogs on desktop.
+product = "flet-quill-editor-example"
+
+# company name to display in about app dialogs
+company = "Flet"
+
+# copyright text to display in about app dialogs
+copyright = "Copyright (C) 2026 by MyCompany"
+
+[tool.flet.app]
+path = "src"
+
+[tool.flet.dev_packages]
+flet-quill-editor = "../.." # relative path
+
+[tool.uv.sources]
+flet-quill-editor = { path = "../..", editable = true }

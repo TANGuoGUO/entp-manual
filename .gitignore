@@ -6,6 +6,10 @@ logs/
 designs/*-markdown/
 designs/**/*-markdown/
 .pytest_cache/
+.dart_tool/
+**/*.egg-info/
+**/build/
+**/pubspec.lock
 
 # User data and local runtime state are never versioned.
 *.db

@@ -1,3 +1,4 @@
 flet[all]==0.86.5
 Pillow==12.3.0
 pystray==0.19.5
+-e ./extensions/flet_quill_editor
