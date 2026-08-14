@@ -1229,7 +1229,7 @@ class EntpFletApp:
                     ft.Row(
                         [
                             pill("正在执行", color=GREEN, bgcolor=GREEN_SOFT, icon=ft.Icons.PLAY_ARROW_ROUNDED),
-                            ft.Text("不是想通，而是在现实里留下变化", size=13, color=MUTED),
+                            ft.Text("不光要想通，我们还要在现实中留下成果", size=13, color=MUTED),
                             ft.IconButton(
                                 ft.Icons.DESCRIPTION_OUTLINED,
                                 tooltip="打开任务 Markdown",
