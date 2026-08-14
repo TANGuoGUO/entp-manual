@@ -1662,6 +1662,7 @@ class EntpFletApp:
 
     def _idea_status_actions(self, thought_id: int, current_status: str) -> ft.Row:
         actions = (
+            ("未审视", "未审视", ft.Icons.RADIO_BUTTON_UNCHECKED_ROUNDED, "#6F7682"),
             ("待孵化", "孵化", ft.Icons.EGG_ALT_OUTLINED, AMBER),
             ("正在尝试", "尝试", ft.Icons.SCIENCE_OUTLINED, GREEN),
             ("已归档", "归档", ft.Icons.ARCHIVE_OUTLINED, "#8B9099"),
@@ -2117,6 +2118,7 @@ class EntpFletApp:
                     style=ft.ButtonStyle(shape=rounded(10)),
                 )
                 for target, label, icon, color in (
+                    ("未审视", "未审视", ft.Icons.RADIO_BUTTON_UNCHECKED_ROUNDED, "#6F7682"),
                     ("待孵化", "孵化", ft.Icons.EGG_ALT_OUTLINED, AMBER),
                     ("正在尝试", "尝试", ft.Icons.SCIENCE_OUTLINED, GREEN),
                     ("已归档", "归档", ft.Icons.ARCHIVE_OUTLINED, "#8B9099"),

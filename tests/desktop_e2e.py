@@ -282,8 +282,33 @@ class DesktopE2ERunner:
         assert saved["status"] == "待孵化"
         assert "产品" in saved["tags"]
         assert "自由正文" in self.ui.markdown.read("thought", thought_id)
+
+        self.ui.open_thought_review(thought_id)
+        review = self.ui.content_switcher.content
+        unreviewed = _find(review, ft.IconButton, tooltip="未审视")
+        unreviewed.on_click(SimpleNamespace(control=unreviewed))
+        assert self.ui.db.get_thought(thought_id)["status"] == "未审视"
+
+        board = self.ui.content_switcher.content
+        matching_cards = [
+            control
+            for control in _walk(board)
+            if isinstance(control, ft.Container)
+            and any(
+                isinstance(child, ft.Text) and child.value == "E2E 已审视灵感"
+                for child in _walk(control)
+            )
+            and any(
+                isinstance(child, ft.IconButton) and child.tooltip == "孵化"
+                for child in _walk(control)
+            )
+        ]
+        card = min(matching_cards, key=lambda control: sum(1 for _ in _walk(control)))
+        hatch = _find(card, ft.IconButton, tooltip="孵化")
+        hatch.on_click(SimpleNamespace(control=hatch))
+        assert self.ui.db.get_thought(thought_id)["status"] == "待孵化"
         self.context["thought_id"] = thought_id
-        return f"灵感 I{thought_id:04d} 从未审视进入待孵化，标签与自由正文已保存"
+        return f"灵感 I{thought_id:04d} 可在未审视与待孵化间往返，标签与自由正文已保存"
 
     def _idea_relations_and_execution(self) -> str:
         thought_id = int(self.context["thought_id"])
