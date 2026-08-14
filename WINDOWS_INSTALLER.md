@@ -1,6 +1,6 @@
 # Windows 安装版
 
-发布文件：`release/ENTP自强手册_2.1.1_初始化版.exe`
+发布文件：`release/ENTP自强手册_2.1.2_初始化版.exe`
 
 安装向导提供以下可选任务：
 
