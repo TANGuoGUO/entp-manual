@@ -125,7 +125,7 @@ class DesktopE2ERunner:
         self.context["task_id"] = task_id
         return f"任务 T{task_id:04d} 已进入当前主线和今日账本"
 
-    def _edit_task_detail(self) -> str:
+    async def _edit_task_detail(self) -> str:
         task_id = int(self.context["task_id"])
         captured: list[ft.AlertDialog] = []
         original_show_dialog = self.page.show_dialog
@@ -143,16 +143,42 @@ class DesktopE2ERunner:
         dialog = captured[-1]
         self.ui._protect_control_tree(dialog)
         title = _find(dialog, ft.TextField, value="E2E 一次点击新增任务")
-        description = _find(dialog, ft.TextField, hint_text="输入内容，记录背景、思路或判断……")
+        edit = _find(dialog, ft.TextButton, content="编辑")
+        edit.on_click(SimpleNamespace(control=edit))
+        description = _find(
+            dialog,
+            ft.TextField,
+            hint_text="在这里记录，支持 Markdown，也可以直接粘贴截图……",
+        )
+        assert description.visible
         title.value = "E2E 已整理任务"
-        description.value = "从界面任务详情保存的背景。"
+        description.value = "## 背景\n\n从界面任务详情保存的 **重点**。"
         description.on_blur(SimpleNamespace(control=description))
+        original_get_image = self.ui.clipboard.get_image
+
+        async def clipboard_image():
+            return (Path(__file__).resolve().parents[1] / "assets" / "app-icon.png").read_bytes()
+
+        self.ui.clipboard.get_image = clipboard_image
+        try:
+            paste = _find(dialog, ft.TextButton, content="粘贴截图")
+            await paste.on_click(SimpleNamespace(control=paste))
+        finally:
+            self.ui.clipboard.get_image = original_get_image
+        finish = _find(dialog, ft.FilledTonalButton, content="完成编辑")
+        finish.on_click(SimpleNamespace(control=finish))
         task = self.ui.db.get_task(task_id)
         assert task["title"] == "E2E 已整理任务"
-        assert task["description"] == "从界面任务详情保存的背景。"
+        assert "从界面任务详情保存的 **重点**" in task["description"]
+        assert "![clipboard-" in task["description"]
         assert "从界面任务详情" in self.ui.markdown.read("task", task_id)
+        assert any(
+            isinstance(control, ft.Markdown) and "## 背景" in str(control.value)
+            for control in _walk(dialog)
+        )
+        assert any(isinstance(control, ft.Image) for control in _walk(dialog))
         self.ui.close_task_detail()
-        return "任务详情以弹窗打开，标题和正文已自动保存并同步 Markdown"
+        return "任务弹窗直接渲染 Markdown；点击正文可编辑并粘贴截图，内容自动保存"
 
     def _focus_and_execute_task(self) -> str:
         task_id = int(self.context["task_id"])
@@ -386,12 +412,18 @@ class DesktopE2ERunner:
                 for control in _walk(dialog)
                 if isinstance(control, ft.TextField) and bool(control.multiline)
             )
+            images_before = len(
+                self.ui.markdown.image_paths("task", task_id, str(editor.value))
+            )
             insert_image = _find(dialog, ft.FilledTonalButton, content="插入图片")
             await insert_image.on_click(SimpleNamespace(control=insert_image))
             paste_image = _find(dialog, ft.TextButton, content="粘贴图片")
             await paste_image.on_click(SimpleNamespace(control=paste_image))
             assert self.ui.markdown.image_paths("task", task_id, str(editor.value))
-            assert len(self.ui.markdown.image_paths("task", task_id, str(editor.value))) == 2
+            assert (
+                len(self.ui.markdown.image_paths("task", task_id, str(editor.value)))
+                == images_before + 2
+            )
             editor.value = str(editor.value) + "\nE2E 用户自由 Markdown 正文。\n"
             editor.on_blur(SimpleNamespace(control=editor))
         finally:
@@ -579,11 +611,6 @@ class DesktopE2ERunner:
                 "id": "GAP-02",
                 "feature": "灵感关联、执行记录与一键转任务",
                 "reason": "数据库方法和 Markdown 同步存在，但当前 Flet 灵感详情只暴露状态、标签和正文",
-            },
-            {
-                "id": "GAP-03",
-                "feature": "完整 Markdown 实时渲染预览",
-                "reason": "内置编辑器已支持源码、图片插入和图片缩略图；标题、列表等完整渲染预览尚未提供",
             },
             {
                 "id": "GAP-04",

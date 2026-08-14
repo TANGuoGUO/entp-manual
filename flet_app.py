@@ -33,7 +33,7 @@ from backup_service import (
 )
 from app_version import APP_VERSION
 from database import Database
-from markdown_store import MarkdownStore
+from markdown_store import MARKDOWN_IMAGE_PATTERN, MarkdownStore
 from update_service import (
     ReleaseInfo,
     UpdateError,
@@ -201,6 +201,7 @@ class EntpFletApp:
         self.calendar_holder = ft.Container()
         self.detail_holder = ft.Container()
         self.selected_task_id: int | None = None
+        self._task_detail_keyboard_restore = None
         self.selected_thought_id: int | None = None
         self.selected_mainline_id: int | None = None
         self.idea_archive_open = False
@@ -1409,10 +1410,82 @@ class EntpFletApp:
             spacing=0,
         )
 
+    def _render_markdown_note(self, kind: str, object_id: int, source: str) -> ft.Control:
+        """Render Markdown and managed local images in their original order."""
+        markdown_style = ft.MarkdownStyleSheet(
+            p_text_style=ft.TextStyle(size=16, color=INK, height=1.55),
+            h1_text_style=ft.TextStyle(size=25, weight=ft.FontWeight.W_700, color=INK),
+            h2_text_style=ft.TextStyle(size=21, weight=ft.FontWeight.W_700, color=INK),
+            h3_text_style=ft.TextStyle(size=18, weight=ft.FontWeight.W_700, color=INK),
+            code_text_style=ft.TextStyle(size=14, font_family="Consolas", color=BLUE_DARK),
+            block_spacing=10,
+            list_indent=22,
+        )
+
+        def markdown_control(value: str) -> ft.Markdown:
+            return ft.Markdown(
+                value=value,
+                selectable=True,
+                extension_set=ft.MarkdownExtensionSet.GITHUB_FLAVORED,
+                code_theme=ft.MarkdownCodeTheme.GITHUB,
+                md_style_sheet=markdown_style,
+                soft_line_break=True,
+                fit_content=True,
+            )
+
+        blocks: list[ft.Control] = []
+        cursor = 0
+        for match in MARKDOWN_IMAGE_PATTERN.finditer(source):
+            images = self.markdown.image_paths(kind, object_id, match.group(0))
+            if not images:
+                continue
+            before = source[cursor:match.start()]
+            if before.strip():
+                blocks.append(markdown_control(before))
+            image_path = images[0]
+            try:
+                image_bytes = image_path.read_bytes()
+            except OSError:
+                image_bytes = b""
+            if image_bytes:
+                blocks.append(
+                    ft.Container(
+                        content=ft.Image(
+                            src=image_bytes,
+                            fit=ft.BoxFit.CONTAIN,
+                            border_radius=12,
+                        ),
+                        height=260,
+                        alignment=ft.Alignment.CENTER_LEFT,
+                        bgcolor="#F7F8FA",
+                        border_radius=14,
+                        padding=8,
+                    )
+                )
+            cursor = match.end()
+        tail = source[cursor:]
+        if tail.strip():
+            blocks.append(markdown_control(tail))
+        if not blocks:
+            blocks.append(
+                ft.Column(
+                    [
+                        ft.Icon(ft.Icons.EDIT_NOTE_ROUNDED, size=28, color="#A4A9B3"),
+                        ft.Text("点击这里开始记录", size=17, color="#777D88"),
+                        ft.Text("支持标题、列表、链接和截图粘贴", size=13, color="#A4A9B3"),
+                    ],
+                    spacing=5,
+                    horizontal_alignment=ft.CrossAxisAlignment.START,
+                )
+            )
+        return ft.Column(blocks, spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
+
     def _task_detail_dialog(self, task) -> ft.AlertDialog:
         task_id = int(task["id"])
         completed = str(task["status"]) == "完成"
         focused = bool(task["is_focus"])
+        state = {"editing": False, "body_focused": False}
+        previous_keyboard_handler = self.page.on_keyboard_event
         title_field = ft.TextField(
             value=str(task["title"]),
             border=ft.InputBorder.NONE,
@@ -1422,31 +1495,187 @@ class EntpFletApp:
         )
         description_field = ft.TextField(
             value=str(task["description"] or ""),
-            hint_text="输入内容，记录背景、思路或判断……",
+            hint_text="在这里记录，支持 Markdown，也可以直接粘贴截图……",
             hint_style=ft.TextStyle(size=15, color="#B3B6BD"),
             border=ft.InputBorder.NONE,
             multiline=True,
-            min_lines=8,
-            max_lines=18,
-            text_size=15,
-            content_padding=0,
+            min_lines=11,
+            max_lines=20,
+            text_size=16,
+            text_style=ft.TextStyle(font_family="Microsoft YaHei UI", height=1.5),
+            content_padding=ft.Padding.symmetric(horizontal=14, vertical=12),
             expand=True,
+            visible=False,
+            bgcolor="#FBFCFE",
+            border_radius=12,
+        )
+        preview_holder = ft.Container(expand=True)
+        preview_surface = ft.Container(
+            content=preview_holder,
+            padding=ft.Padding.symmetric(horizontal=6, vertical=4),
+            expand=True,
+            border_radius=12,
+        )
+        note_header = ft.Row(spacing=4)
+        editor_toolbar = ft.Row(visible=False, spacing=6)
+        editor_panel = ft.Column(
+            [editor_toolbar, description_field],
+            spacing=6,
+            expand=True,
+            visible=False,
         )
 
+        def render_preview() -> None:
+            preview_holder.content = self._render_markdown_note(
+                "task", task_id, str(description_field.value or "")
+            )
+
         def save_fields(_) -> None:
-            title = title_field.value.strip() or str(task["title"])
+            title = str(title_field.value or "").strip() or str(task["title"])
             self.db.update_task(
                 task_id,
                 title=title,
-                description=description_field.value,
+                description=str(description_field.value or ""),
             )
             self._sync_markdown()
             self.task_holder.controls = self._task_section(
                 self.db.list_tasks(self.current_mid)
             )
 
-        title_field.on_blur = save_fields
-        description_field.on_blur = save_fields
+        def insert_links(links: list[str]) -> None:
+            content = str(description_field.value or "")
+            selection = description_field.selection
+            if selection is not None and min(selection.base_offset, selection.extent_offset) >= 0:
+                start = min(selection.base_offset, selection.extent_offset)
+                end = max(selection.base_offset, selection.extent_offset)
+            else:
+                start = end = len(content)
+            before = content[:start]
+            after = content[end:]
+            prefix = "" if not before or before.endswith("\n") else "\n"
+            suffix = "" if not after or after.startswith("\n") else "\n"
+            inserted = prefix + "\n".join(links) + suffix
+            description_field.value = before + inserted + after
+            cursor = start + len(inserted)
+            description_field.selection = ft.TextSelection(
+                base_offset=cursor,
+                extent_offset=cursor,
+            )
+            save_fields(None)
+            self.page.update()
+
+        async def insert_task_images(_) -> None:
+            files = await self.file_picker.pick_files(
+                dialog_title="插入任务图片",
+                file_type=ft.FilePickerFileType.CUSTOM,
+                allowed_extensions=["png", "jpg", "jpeg", "gif", "webp", "bmp"],
+                allow_multiple=True,
+            )
+            if not files:
+                return
+            links: list[str] = []
+            for selected in files:
+                selected_path = getattr(selected, "path", None)
+                if not selected_path:
+                    raise OSError("无法读取所选图片的本地路径")
+                image_path, relative = self.markdown.add_image("task", task_id, selected_path)
+                links.append(f"![{image_path.stem}]({relative})")
+            insert_links(links)
+
+        async def paste_task_image(_=None, *, quiet: bool = False) -> bool:
+            try:
+                image_bytes = await self.clipboard.get_image()
+                if not image_bytes:
+                    if not quiet:
+                        self.page.show_dialog(
+                            ft.SnackBar(content=ft.Text("剪贴板里没有图片。先复制或截图，再来粘贴。"))
+                        )
+                    return False
+                image_path, relative = self.markdown.add_image_bytes(
+                    "task",
+                    task_id,
+                    image_bytes,
+                    stem=datetime.now().strftime("clipboard-%Y%m%d-%H%M%S"),
+                )
+                insert_links([f"![{image_path.stem}]({relative})"])
+                self.page.show_dialog(ft.SnackBar(content=ft.Text("图片已粘贴到任务笔记")))
+                return True
+            except Exception as error:
+                self._write_runtime_error("粘贴任务图片失败", traceback.format_exc())
+                if not quiet:
+                    self._notify_error(f"图片粘贴失败：{error}")
+                return False
+
+        async def handle_task_shortcut(event: ft.KeyboardEvent) -> None:
+            if (
+                state["editing"]
+                and state["body_focused"]
+                and event.ctrl
+                and str(event.key).lower() == "v"
+            ):
+                await paste_task_image(quiet=True)
+                return
+            if previous_keyboard_handler is not None:
+                result = previous_keyboard_handler(event)
+                if inspect.isawaitable(result):
+                    await result
+
+        async def focus_description() -> None:
+            try:
+                await description_field.focus()
+            except RuntimeError:
+                return
+
+        def begin_edit(_) -> None:
+            state["editing"] = True
+            note_header.visible = False
+            preview_surface.visible = False
+            editor_panel.visible = True
+            editor_toolbar.visible = True
+            description_field.visible = True
+            self.page.update()
+            self.page.run_task(focus_description)
+
+        def finish_edit(_) -> None:
+            save_fields(None)
+            state["editing"] = False
+            state["body_focused"] = False
+            description_field.visible = False
+            editor_toolbar.visible = False
+            editor_panel.visible = False
+            note_header.visible = True
+            preview_surface.visible = True
+            render_preview()
+            self.page.update()
+
+        preview_surface.on_click = begin_edit
+        editor_toolbar.controls = [
+            ft.Text("正在编辑", size=13, weight=ft.FontWeight.W_600, color=BLUE),
+            ft.Container(expand=True),
+            ft.TextButton(
+                "插入图片",
+                icon=ft.Icons.ADD_PHOTO_ALTERNATE_OUTLINED,
+                on_click=insert_task_images,
+            ),
+            ft.TextButton(
+                "粘贴截图",
+                icon=ft.Icons.CONTENT_PASTE_ROUNDED,
+                on_click=paste_task_image,
+            ),
+            ft.FilledTonalButton(
+                "完成编辑",
+                icon=ft.Icons.DONE_ROUNDED,
+                on_click=finish_edit,
+                style=ft.ButtonStyle(shape=rounded(10)),
+            ),
+        ]
+        render_preview()
+
+        def restore_keyboard_handler() -> None:
+            self.page.on_keyboard_event = previous_keyboard_handler
+
+        self._task_detail_keyboard_restore = restore_keyboard_handler
+        self.page.on_keyboard_event = handle_task_shortcut
 
         def close_detail(_) -> None:
             save_fields(None)
@@ -1464,6 +1693,27 @@ class EntpFletApp:
         def dismissed(_) -> None:
             save_fields(None)
             self._finish_task_detail_state()
+
+        def description_focus(_) -> None:
+            state["body_focused"] = True
+
+        def description_blur(_) -> None:
+            state["body_focused"] = False
+            save_fields(None)
+
+        title_field.on_blur = save_fields
+        description_field.on_focus = description_focus
+        description_field.on_blur = description_blur
+
+        note_header.controls = [
+            ft.Text("任务笔记", size=13, weight=ft.FontWeight.W_600, color=MUTED),
+            ft.Container(expand=True),
+            ft.TextButton(
+                "编辑",
+                icon=ft.Icons.EDIT_OUTLINED,
+                on_click=begin_edit,
+            ),
+        ]
 
         header = ft.Container(
             content=ft.Row(
@@ -1500,7 +1750,12 @@ class EntpFletApp:
         )
         body = ft.Container(
             content=ft.Column(
-                [title_field, description_field],
+                [
+                    title_field,
+                    note_header,
+                    preview_surface,
+                    editor_panel,
+                ],
                 spacing=14,
                 expand=True,
             ),
@@ -1510,12 +1765,14 @@ class EntpFletApp:
         footer = ft.Container(
             content=ft.Row(
                 [
-                    ft.TextButton(
-                        "打开 Markdown",
-                        icon=ft.Icons.DESCRIPTION_OUTLINED,
-                        on_click=lambda _: self.open_markdown("task", task_id),
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.SAVE_OUTLINED, size=17, color=MUTED),
+                            ft.Text("已保存在本地", size=12, color=MUTED),
+                        ],
+                        spacing=6,
                     ),
-                    ft.Text("离开输入框时自动保存", size=12, color=MUTED),
+                    ft.Text("点击正文即可编辑 · Ctrl+V 可粘贴截图", size=12, color=MUTED),
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             ),
@@ -3618,6 +3875,9 @@ class EntpFletApp:
         self.page.update()
 
     def _finish_task_detail_state(self) -> None:
+        if self._task_detail_keyboard_restore is not None:
+            self._task_detail_keyboard_restore()
+            self._task_detail_keyboard_restore = None
         self.selected_task_id = None
         self.focus_holder.visible = True
         self.task_holder.controls = self._task_section(self.db.list_tasks(self.current_mid))
