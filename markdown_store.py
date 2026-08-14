@@ -183,12 +183,20 @@ class MarkdownStore:
             reference = match.group("angled") or match.group("plain") or ""
             if "://" in reference or reference.startswith("data:"):
                 continue
-            candidate = (document.parent / reference).resolve()
+            # Keep the path spelling rooted in the configured workspace. Windows
+            # can expose the same temporary directory once as RUNNER~1 and once
+            # as runneradmin; returning the canonical spelling made an image look
+            # different from the path returned when it was inserted.
+            candidate = Path(os.path.abspath(document.parent / reference))
+            canonical_candidate = candidate.resolve()
             try:
-                candidate.relative_to(root)
+                canonical_candidate.relative_to(root)
             except ValueError:
                 continue
-            if candidate.is_file() and candidate.suffix.lower() in IMAGE_EXTENSIONS:
+            if (
+                canonical_candidate.is_file()
+                and canonical_candidate.suffix.lower() in IMAGE_EXTENSIONS
+            ):
                 images.append(candidate)
         return images
 

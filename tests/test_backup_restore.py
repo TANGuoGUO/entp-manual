@@ -160,7 +160,10 @@ class BackupRestoreTests(unittest.TestCase):
         def fail_installing_markdown(source, destination):
             source_path = Path(source)
             destination_path = Path(destination)
-            if source_path.name.startswith(".markdown.import-") and destination_path == self.markdown_root:
+            if (
+                source_path.name.startswith(".markdown.import-")
+                and destination_path.name == self.markdown_root.name
+            ):
                 raise OSError("forced-markdown-install-failure")
             return original_replace(source, destination)
 
