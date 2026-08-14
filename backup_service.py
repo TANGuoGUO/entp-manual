@@ -13,6 +13,8 @@ from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, BinaryIO
 
+from app_version import APP_VERSION
+
 if TYPE_CHECKING:
     from database import Database
 
@@ -256,7 +258,7 @@ def export_workspace(
             manifest = {
                 "format": BACKUP_FORMAT,
                 "format_version": BACKUP_VERSION,
-                "app_version": "2.0",
+                "app_version": APP_VERSION,
                 "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "database": DATABASE_MEMBER,
                 "markdown_root": "markdown/",

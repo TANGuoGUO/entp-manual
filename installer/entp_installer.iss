@@ -1,5 +1,5 @@
 #define MyAppName "ENTP 自强手册"
-#define MyAppVersion "2.0.2"
+#define MyAppVersion "2.1.0"
 #define MyAppPublisher "ENTP Manual"
 #define MyAppExeName "ENTPManual.exe"
 #define MyTaskName "ENTPManual_Autostart"
@@ -14,7 +14,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 OutputDir=..\release
-OutputBaseFilename=ENTP自强手册_2.0.2_初始化版
+OutputBaseFilename=ENTP自强手册_2.1.0_初始化版
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -25,6 +25,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
 RestartApplications=no
+UsePreviousTasks=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: unchecked
@@ -40,6 +41,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDi
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--updated"; Flags: nowait skipifnotsilent
 
 [UninstallRun]
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""{#MyTaskName}"""; Flags: runhidden waituntilterminated; RunOnceId: "DeleteEntpAutostartTask"

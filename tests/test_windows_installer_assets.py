@@ -23,10 +23,19 @@ class WindowsInstallerAssetTests(unittest.TestCase):
     def test_installer_exposes_uninstall_and_uses_icon(self) -> None:
         script = (ROOT / "installer" / "entp_installer.iss").read_text(encoding="utf-8")
         build = (ROOT / "installer" / "build_installer.ps1").read_text(encoding="utf-8")
+        manifest = (ROOT / "installer" / "create_update_manifest.ps1").read_text(encoding="utf-8")
         self.assertIn("SetupIconFile=..\\assets\\app-icon.ico", script)
         self.assertIn('Name: "{group}\\卸载 {#MyAppName}"', script)
         self.assertIn('Filename: "{uninstallexe}"', script)
         self.assertIn('--icon "assets\\app-icon.ico"', build)
+        self.assertIn('release\\update.json', build)
+        self.assertIn('Get-FileHash', manifest)
+        self.assertIn('sha256', manifest)
+
+    def test_silent_update_restarts_app_and_preserves_task_choices(self) -> None:
+        script = (ROOT / "installer" / "entp_installer.iss").read_text(encoding="utf-8")
+        self.assertIn("UsePreviousTasks=yes", script)
+        self.assertIn('Parameters: "--updated"; Flags: nowait skipifnotsilent', script)
 
 
 if __name__ == "__main__":

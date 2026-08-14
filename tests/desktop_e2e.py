@@ -410,7 +410,8 @@ class DesktopE2ERunner:
         )
         self.ui.show_view(self.ui.NAV_CURRENT)
         assert self.ui.quick_task_input in set(_walk(self.ui.content_switcher.content))
-        return "备份、新建主线和对象 Markdown 入口在实际页面可发现"
+        assert self.ui.update_button.content.startswith("检查更新")
+        return "备份、新建主线、对象 Markdown 和 GitHub 更新入口均可发现"
 
     def _idea_archive_recycle_bin(self) -> str:
         thought_id = self.ui.db.create_thought("E2E 回收站灵感")

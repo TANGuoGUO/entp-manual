@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import calendar
 import ctypes
 import ctypes.wintypes
@@ -30,8 +31,17 @@ from backup_service import (
     inspect_backup,
     restore_workspace,
 )
+from app_version import APP_VERSION
 from database import Database
 from markdown_store import MarkdownStore
+from update_service import (
+    ReleaseInfo,
+    UpdateError,
+    download_release,
+    fetch_latest_release,
+    is_newer_version,
+    launch_silent_update,
+)
 
 
 if os.name == "nt":
@@ -116,6 +126,7 @@ class EntpFletApp:
         initial_view: str = "current",
         *,
         start_hidden: bool = False,
+        enable_update_checks: bool = True,
     ) -> None:
         self.page = page
         self._closed = False
@@ -124,6 +135,10 @@ class EntpFletApp:
         self._tray_hint_shown = False
         self.tray_available = pystray is not None and Image is not None
         self.start_hidden = start_hidden
+        self.enable_update_checks = enable_update_checks
+        self.available_release: ReleaseInfo | None = None
+        self._update_checking = False
+        self._update_downloading = False
         self._original_page_update = page.update
         self.page.update = self._protected_page_update
         self.file_picker = ft.FilePicker()
@@ -280,9 +295,11 @@ class EntpFletApp:
         self._start_tray()
         if self.start_hidden and self.tray_available:
             self.page.run_task(self._hide_window)
+        if self.enable_update_checks:
+            self.page.run_task(self._auto_check_for_updates)
 
     def _configure_page(self) -> None:
-        self.page.title = "ENTP 自强手册 2.0"
+        self.page.title = f"ENTP 自强手册 {APP_VERSION}"
         self.page.padding = 0
         self.page.bgcolor = CANVAS
         self.page.enable_screenshots = True
@@ -735,6 +752,13 @@ class EntpFletApp:
             ),
             padding=ft.Padding.only(left=18, right=12, top=24, bottom=28),
         )
+        self.update_button = ft.TextButton(
+            f"检查更新 · {APP_VERSION}",
+            icon=ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED,
+            tooltip="从 GitHub Releases 检查并安装新版本",
+            on_click=self.handle_update_button,
+            style=ft.ButtonStyle(color=MUTED),
+        )
         return ft.NavigationRail(
             extended=True,
             min_width=82,
@@ -796,6 +820,7 @@ class EntpFletApp:
                             if self.tray_available
                             else []
                         ),
+                        self.update_button,
                         ft.Row(
                             [
                                 ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, size=19, color=MUTED),
@@ -818,6 +843,194 @@ class EntpFletApp:
             pin_trailing_to_bottom=True,
             on_change=lambda e: self.show_view(int(e.control.selected_index)),
         )
+
+    async def handle_update_button(self, _=None) -> None:
+        if self.available_release is not None:
+            self.show_update_dialog(self.available_release)
+            return
+        await self._check_for_updates(manual=True)
+
+    async def _auto_check_for_updates(self) -> None:
+        today = date.today().isoformat()
+        if self.db.get_setting("last_update_check_date") == today:
+            return
+        # Record the attempt before making a network request so an offline
+        # machine is not delayed again on every launch during the same day.
+        self.db.set_setting("last_update_check_date", today)
+        await self._check_for_updates(manual=False)
+
+    async def _check_for_updates(self, *, manual: bool) -> None:
+        if self._update_checking or self._update_downloading:
+            if manual:
+                self._notify_success("正在检查更新，请稍候")
+            return
+        self._update_checking = True
+        self.update_button.disabled = True
+        self.update_button.content = "正在检查更新…"
+        self.page.update()
+        try:
+            release = await asyncio.to_thread(fetch_latest_release)
+            if not is_newer_version(release.version, APP_VERSION):
+                self.available_release = None
+                self.update_button.content = f"已是最新版 · {APP_VERSION}"
+                self.update_button.style = ft.ButtonStyle(color=MUTED)
+                if manual:
+                    self._notify_success(f"当前版本 {APP_VERSION} 已是最新版")
+                return
+            self.available_release = release
+            self.update_button.content = f"更新到 {release.version}"
+            self.update_button.icon = ft.Icons.NEW_RELEASES_ROUNDED
+            self.update_button.style = ft.ButtonStyle(color=RED)
+            if manual:
+                self.show_update_dialog(release)
+            else:
+                self._notify_success(f"发现新版本 {release.version}，可从左下角更新")
+        except Exception as error:
+            self._write_runtime_error("检查 GitHub 更新失败", traceback.format_exc())
+            self.update_button.content = f"检查更新 · {APP_VERSION}"
+            self.update_button.style = ft.ButtonStyle(color=MUTED)
+            if manual:
+                message = str(error) if isinstance(error, UpdateError) else f"检查更新失败：{error}"
+                self._notify_error(message)
+        finally:
+            self._update_checking = False
+            self.update_button.disabled = False
+            self.page.update()
+
+    def show_update_dialog(self, release: ReleaseInfo) -> None:
+        notes = release.notes.strip()
+        if len(notes) > 1600:
+            notes = f"{notes[:1600].rstrip()}\n…"
+        if not notes:
+            notes = "这个版本没有附加说明。"
+        size_mb = release.size / (1024 * 1024)
+
+        async def install(_) -> None:
+            await self.download_and_install_update(release)
+
+        self.page.show_dialog(
+            ft.AlertDialog(
+                modal=True,
+                title=ft.Row(
+                    [
+                        ft.Icon(ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED, color=BLUE, size=27),
+                        ft.Text(
+                            f"发现新版本 {release.version}",
+                            size=22,
+                            weight=ft.FontWeight.W_700,
+                        ),
+                    ],
+                    spacing=11,
+                ),
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            f"当前版本 {APP_VERSION} · 下载约 {size_mb:.1f} MB",
+                            size=13,
+                            color=MUTED,
+                        ),
+                        ft.Container(
+                            content=ft.Text(notes, size=14, color=INK, selectable=True),
+                            padding=14,
+                            bgcolor="#F7F8FB",
+                            border_radius=14,
+                        ),
+                        ft.Text(
+                            "下载后会自动关闭程序并覆盖升级。数据库和 Markdown 不会被修改。",
+                            size=13,
+                            color=MUTED,
+                        ),
+                    ],
+                    width=570,
+                    spacing=13,
+                    tight=True,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+                actions=[
+                    ft.TextButton("稍后", on_click=lambda _: self._close_dialog()),
+                    ft.FilledButton(
+                        "下载并更新",
+                        icon=ft.Icons.DOWNLOAD_ROUNDED,
+                        on_click=install,
+                        style=ft.ButtonStyle(
+                            shape=rounded(12),
+                            bgcolor=BLUE,
+                            color=ft.Colors.WHITE,
+                        ),
+                    ),
+                ],
+                shape=rounded(20),
+                scrollable=True,
+            )
+        )
+
+    async def download_and_install_update(self, release: ReleaseInfo) -> None:
+        if self._update_downloading:
+            return
+        self._update_downloading = True
+        self._close_dialog()
+        progress_bar = ft.ProgressBar(value=0, color=BLUE, bgcolor=BLUE_SOFT)
+        progress_text = ft.Text("准备下载…", size=14, color=MUTED)
+        progress_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("正在更新", size=22, weight=ft.FontWeight.W_700),
+            content=ft.Column(
+                [progress_text, progress_bar],
+                width=520,
+                spacing=14,
+                tight=True,
+            ),
+            shape=rounded(20),
+        )
+        self.page.show_dialog(progress_dialog)
+        loop = asyncio.get_running_loop()
+        progress_events: asyncio.Queue[tuple[int, int]] = asyncio.Queue()
+
+        def report_progress(downloaded: int, total: int) -> None:
+            loop.call_soon_threadsafe(
+                progress_events.put_nowait,
+                (downloaded, total),
+            )
+
+        try:
+            task = asyncio.create_task(
+                asyncio.to_thread(
+                    download_release,
+                    release,
+                    ROOT / "updates",
+                    progress=report_progress,
+                )
+            )
+            while not task.done():
+                try:
+                    downloaded, total = await asyncio.wait_for(
+                        progress_events.get(), timeout=0.2
+                    )
+                except TimeoutError:
+                    continue
+                progress_bar.value = min(1.0, downloaded / max(total, 1))
+                progress_text.value = (
+                    f"已下载 {downloaded / (1024 * 1024):.1f} / "
+                    f"{total / (1024 * 1024):.1f} MB"
+                )
+                self.page.update()
+            installer = await task
+            progress_bar.value = 1
+            progress_text.value = "校验完成，正在启动更新程序…"
+            self.page.update()
+            launch_silent_update(installer)
+            await asyncio.sleep(0.35)
+            await self._exit_application()
+        except Exception as error:
+            self._write_runtime_error("下载或安装更新失败", traceback.format_exc())
+            try:
+                self._close_dialog()
+            except Exception:
+                pass
+            message = str(error) if isinstance(error, UpdateError) else f"更新失败：{error}"
+            self._notify_error(message)
+        finally:
+            self._update_downloading = False
 
     def show_view(self, index: int) -> None:
         self.active_index = index
@@ -3742,6 +3955,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qa-runtime-error", action="store_true")
     parser.add_argument("--qa-window-state-report", type=Path)
     parser.add_argument("--start-hidden", action="store_true")
+    parser.add_argument("--updated", action="store_true")
     return parser.parse_args()
 
 
@@ -3787,14 +4001,39 @@ def main() -> None:
     async def app_main(page: ft.Page) -> None:
         ui: EntpFletApp | None = None
         try:
-            import asyncio
-
+            qa_mode = any(
+                (
+                    args.qa_day,
+                    args.qa_screenshot,
+                    args.qa_compact,
+                    args.qa_task_detail,
+                    args.qa_quick_add,
+                    args.qa_input_focus,
+                    args.qa_add_inspiration,
+                    args.qa_inspiration_dialog,
+                    args.qa_idea_detail,
+                    args.qa_mainline_editor,
+                    args.qa_archive_mainline,
+                    args.qa_import_file,
+                    args.qa_boundary_report,
+                    args.qa_boundary_error,
+                    args.qa_execution_dialog,
+                    args.qa_e2e_report,
+                    args.qa_runtime_error,
+                    args.qa_window_state_report,
+                )
+            )
             ui = EntpFletApp(
                 page,
                 args.db.resolve(),
                 args.view,
                 start_hidden=args.start_hidden,
+                enable_update_checks=(
+                    not qa_mode and args.db.resolve() == DEFAULT_DB.resolve()
+                ),
             )
+            if args.updated:
+                ui._notify_success(f"已更新到 {APP_VERSION}")
             if args.qa_window_state_report:
                 import asyncio
 

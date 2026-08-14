@@ -18,13 +18,25 @@ try {
         --add-data "assets:assets" `
         --product-name "ENTP Manual" `
         --file-description "Curiosity Momentum Loop" `
-        --product-version "2.0.2" `
-        --file-version "2.0.2.0" `
+        --product-version "2.1.0" `
+        --file-version "2.1.0.0" `
         --company-name "ENTP Manual" -y
     if ($LASTEXITCODE -ne 0) { throw "EXE packaging failed: $LASTEXITCODE" }
 
     & $Iscc (Join-Path $PSScriptRoot "entp_installer.iss")
     if ($LASTEXITCODE -ne 0) { throw "Installer build failed: $LASTEXITCODE" }
+
+    $BuiltInstaller = Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "release") `
+        -Filter "*2.1.0*.exe" | Where-Object { $_.Name -ne "ENTPManual.exe" } | `
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if (-not $BuiltInstaller) { throw "Built installer was not found." }
+
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass `
+        -File (Join-Path $PSScriptRoot "create_update_manifest.ps1") `
+        -Version "2.1.0" `
+        -InstallerPath $BuiltInstaller.FullName `
+        -OutputPath (Join-Path $ProjectRoot "release\update.json")
+    if ($LASTEXITCODE -ne 0) { throw "Update manifest generation failed: $LASTEXITCODE" }
 }
 finally {
     Pop-Location

@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.0.2-Setup.exe">下载 Windows 安装版</a>
+  <a href="https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.1.0-Setup.exe">下载 Windows 安装版</a>
   ·
   <a href="https://github.com/TANGuoGUO/entp-manual/releases/latest">版本说明</a>
   ·
@@ -104,6 +104,10 @@ markdown/
 
 “导出全部”会生成 `.entp.zip`，其中包含数据库、Markdown 和校验清单。导入前，程序会先备份当前工作区。
 
+### 6. 直接从 GitHub 更新
+
+左下角可以手动检查 GitHub Releases。程序每天最多自动检查一次；发现新版本后，可以直接下载并覆盖升级，不需要先卸载，也不会打开完整安装向导。安装包通过 SHA-256 校验后才会启动，数据库和 Markdown 不参与覆盖。
+
 ## 第一次打开怎么用
 
 初始化版内置了一组介绍数据。它们不是截图或弹窗，而是真正的主线、任务、灵感和完成记录，可以直接操作。
@@ -165,7 +169,7 @@ markdown/
 
 ## 下载和安装
 
-[直接下载 Windows 安装版](https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.0.2-Setup.exe)
+[直接下载 Windows 安装版](https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.1.0-Setup.exe)
 
 安装时可以选择安装目录、桌面快捷方式，以及是否在登录 Windows 后于后台启动。程序支持系统托盘隐藏和标准 Windows 卸载。
 
