@@ -1624,10 +1624,10 @@ class EntpFletApp:
                         ft.ResponsiveRow(day_headers, columns=7, spacing=4),
                         ft.ResponsiveRow(day_cells, columns=7, spacing=4, run_spacing=4),
                         ft.Divider(height=1, color=LINE),
-                        ft.Text("今天留下的现实证据", size=14, weight=ft.FontWeight.W_700, color=INK),
+                        ft.Text("今天的实际收获", size=14, weight=ft.FontWeight.W_700, color=INK),
                         ft.Column(evidence, spacing=10),
                         ft.Text(
-                            "“现实证据”不是额外填写的表格，而是任务完成和执行记录自动留下的结果。",
+                            "实际收获来自已经完成的任务和执行记录，不需要另外填写表格。",
                             size=12,
                             color=MUTED,
                         ),
