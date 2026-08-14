@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
@@ -19,6 +21,11 @@ KIND_INFO = {
     "thought": ("思路", "I"),
     "execution": ("执行记录", "L"),
 }
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+MARKDOWN_IMAGE_PATTERN = re.compile(
+    r"!\[[^\]]*\]\((?:<(?P<angled>[^>]+)>|(?P<plain>[^)\s]+))\)"
+)
 
 
 def yaml_value(value: object) -> str:
@@ -55,6 +62,53 @@ class MarkdownStore:
     def read(self, kind: str, object_id: int) -> str:
         path = self.path_for(kind, object_id)
         return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def add_image(self, kind: str, object_id: int, source: str | Path) -> tuple[Path, str]:
+        """Copy an image into the managed Markdown tree and return its relative link."""
+        source_path = Path(source).resolve()
+        if not source_path.is_file():
+            raise FileNotFoundError(f"找不到所选图片：{source_path}")
+        suffix = source_path.suffix.lower()
+        if suffix not in IMAGE_EXTENSIONS:
+            raise ValueError("只支持 PNG、JPG、GIF、WebP 和 BMP 图片")
+
+        document = self.path_for(kind, object_id)
+        _directory, prefix = KIND_INFO[kind]
+        attachment_dir = self.root / "_assets" / kind / f"{prefix}{int(object_id):04d}"
+        attachment_dir.mkdir(parents=True, exist_ok=True)
+        safe_stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "-", source_path.stem).strip("-")
+        safe_stem = safe_stem or "image"
+        destination = attachment_dir / f"{safe_stem}{suffix}"
+        if destination.exists():
+            destination = attachment_dir / f"{safe_stem}-{uuid.uuid4().hex[:8]}{suffix}"
+
+        temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            shutil.copyfile(source_path, temporary)
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+        relative = os.path.relpath(destination, document.parent).replace(os.sep, "/")
+        return destination, relative
+
+    def image_paths(self, kind: str, object_id: int, content: str) -> list[Path]:
+        """Resolve local image references without allowing paths outside this workspace."""
+        document = self.path_for(kind, object_id)
+        root = self.root.resolve()
+        images: list[Path] = []
+        for match in MARKDOWN_IMAGE_PATTERN.finditer(content):
+            reference = match.group("angled") or match.group("plain") or ""
+            if "://" in reference or reference.startswith("data:"):
+                continue
+            candidate = (document.parent / reference).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                continue
+            if candidate.is_file() and candidate.suffix.lower() in IMAGE_EXTENSIONS:
+                images.append(candidate)
+        return images
 
     @staticmethod
     def _atomic_write_text(path: Path, content: str) -> None:

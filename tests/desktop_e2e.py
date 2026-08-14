@@ -355,17 +355,43 @@ class DesktopE2ERunner:
         assert self.ui.db.get_task(int(self.context["task_id"])) is not None
         return "主线归档/恢复不删除任务和 Markdown"
 
-    def _markdown_roundtrip(self) -> str:
+    async def _markdown_roundtrip(self) -> str:
         task_id = int(self.context["task_id"])
-        existing = self.ui.markdown.read("task", task_id)
-        self.ui.markdown.write_user_edited(
-            "task",
-            task_id,
-            existing + "\nE2E 用户自由 Markdown 正文。\n",
-        )
+        captured: list[ft.AlertDialog] = []
+        original_show_dialog = self.page.show_dialog
+
+        def capture_dialog(dialog) -> None:
+            captured.append(dialog)
+            original_show_dialog(dialog)
+
+        async def choose_image(**_kwargs):
+            image = Path(__file__).resolve().parents[1] / "assets" / "app-icon.png"
+            return [SimpleNamespace(path=str(image))]
+
+        original_pick_files = self.ui.file_picker.pick_files
+        self.page.show_dialog = capture_dialog
+        self.ui.file_picker.pick_files = choose_image
+        try:
+            self.ui.open_markdown("task", task_id)
+            dialog = captured[-1]
+            self.ui._protect_control_tree(dialog)
+            editor = next(
+                control
+                for control in _walk(dialog)
+                if isinstance(control, ft.TextField) and bool(control.multiline)
+            )
+            insert_image = _find(dialog, ft.FilledTonalButton, content="插入图片")
+            await insert_image.on_click(SimpleNamespace(control=insert_image))
+            assert self.ui.markdown.image_paths("task", task_id, str(editor.value))
+            editor.value = str(editor.value) + "\nE2E 用户自由 Markdown 正文。\n"
+            editor.on_blur(SimpleNamespace(control=editor))
+        finally:
+            self.page.show_dialog = original_show_dialog
+            self.ui.file_picker.pick_files = original_pick_files
+        assert "E2E 用户自由 Markdown 正文" in self.ui.markdown.read("task", task_id)
         self.ui._sync_markdown()
         assert "E2E 用户自由 Markdown 正文" in self.ui.markdown.read("task", task_id)
-        return "系统区刷新后用户自由 Markdown 原样保留"
+        return "应用内 Markdown 可编辑、插入图片并自动保存，系统刷新后内容仍保留"
 
     async def _backup_roundtrip(self) -> str:
         archive = self.report_path.parent / "desktop-e2e.entp.zip"
@@ -525,12 +551,7 @@ class DesktopE2ERunner:
             level="DATA_CONTRACT",
         )
         await self.case("E2E-11", "主线归档与恢复", self._archive_restore_mainline)
-        await self.case(
-            "DC-02",
-            "Markdown 自由正文数据契约",
-            self._markdown_roundtrip,
-            level="DATA_CONTRACT",
-        )
+        await self.case("E2E-12", "Markdown 编辑与图片插入", self._markdown_roundtrip)
         await self.case("E2E-13", "完整导出与导入", self._backup_roundtrip)
         await self.case("E2E-14", "异常隔离与事务回滚", self._isolated_failure)
         await self.case("E2E-15", "今日排序与分组折叠", self._today_sort_and_collapse)
@@ -551,8 +572,8 @@ class DesktopE2ERunner:
             },
             {
                 "id": "GAP-03",
-                "feature": "内置 Markdown 源码编辑与实时预览",
-                "reason": "旧 Tkinter 入口仍有编辑器；当前 Flet 入口只调用系统外部 Markdown 应用",
+                "feature": "完整 Markdown 实时渲染预览",
+                "reason": "内置编辑器已支持源码、图片插入和图片缩略图；标题、列表等完整渲染预览尚未提供",
             },
             {
                 "id": "GAP-04",

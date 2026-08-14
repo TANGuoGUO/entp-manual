@@ -52,6 +52,13 @@ class BackupRestoreTests(unittest.TestCase):
             task_path.read_text(encoding="utf-8") + "\n用户自由记录：导出我。\n",
             encoding="utf-8",
         )
+        source_image = self.base / "backup-image.png"
+        source_image.write_bytes(b"\x89PNG\r\n\x1a\nbackup-image")
+        attached_image, relative_image = self.markdown.add_image("task", task, source_image)
+        task_path.write_text(
+            task_path.read_text(encoding="utf-8") + f"\n![备份图片]({relative_image})\n",
+            encoding="utf-8",
+        )
 
         summary = export_workspace(self.db, self.markdown_root, self.archive)
         self.assertGreater(summary.table_counts["tasks"], 0)
@@ -61,6 +68,10 @@ class BackupRestoreTests(unittest.TestCase):
             self.assertIn("manifest.json", names)
             self.assertIn("database/entp.db", names)
             self.assertIn(f"markdown/任务/T{task:04d}.md", names)
+            self.assertIn(
+                f"markdown/{attached_image.relative_to(self.markdown_root).as_posix()}",
+                names,
+            )
             manifest = json.loads(archive.read("manifest.json"))
             self.assertEqual(manifest["format"], "entp-workspace-backup")
             self.assertEqual(manifest["table_counts"], summary.table_counts)

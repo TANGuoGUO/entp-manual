@@ -3661,14 +3661,166 @@ class EntpFletApp:
         if not self._sync_markdown():
             return
         path = self.markdown.path_for(kind, object_id)
-        try:
-            if os.name == "nt":
-                os.startfile(path)  # type: ignore[attr-defined]
+        editor = ft.TextField(
+            value=path.read_text(encoding="utf-8"),
+            hint_text="在这里写 Markdown，也可以点击上方按钮插入图片",
+            multiline=True,
+            min_lines=16,
+            max_lines=28,
+            expand=True,
+            text_size=14,
+            text_style=ft.TextStyle(font_family="Consolas", height=1.45),
+            border_radius=14,
+            border_color=LINE,
+            focused_border_color=BLUE,
+            content_padding=16,
+        )
+        gallery = ft.Row(spacing=10, scroll=ft.ScrollMode.AUTO)
+        gallery_section = ft.Column(
+            [
+                ft.Text("文档中的图片", size=13, weight=ft.FontWeight.W_600, color=MUTED),
+                ft.Container(gallery, height=108),
+            ],
+            spacing=6,
+            visible=False,
+        )
+
+        def save_source(_=None) -> None:
+            self.markdown.write_user_edited(kind, object_id, str(editor.value or ""))
+
+        def render_gallery() -> None:
+            images = self.markdown.image_paths(kind, object_id, str(editor.value or ""))
+            controls: list[ft.Control] = []
+            for image_path in images:
+                try:
+                    preview_source = image_path.read_bytes()
+                except OSError:
+                    continue
+                controls.append(
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Image(
+                                    src=preview_source,
+                                    width=126,
+                                    height=78,
+                                    fit=ft.BoxFit.CONTAIN,
+                                    border_radius=8,
+                                ),
+                                ft.Text(image_path.name, size=11, color=MUTED, max_lines=1),
+                            ],
+                            spacing=4,
+                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        width=138,
+                        padding=6,
+                        border=ft.Border.all(1, LINE),
+                        border_radius=10,
+                        bgcolor=SURFACE,
+                    )
+                )
+            gallery.controls = controls
+            gallery_section.visible = bool(controls)
+
+        async def insert_images(_) -> None:
+            files = await self.file_picker.pick_files(
+                dialog_title="插入 Markdown 图片",
+                file_type=ft.FilePickerFileType.CUSTOM,
+                allowed_extensions=["png", "jpg", "jpeg", "gif", "webp", "bmp"],
+                allow_multiple=True,
+            )
+            if not files:
+                return
+            links: list[str] = []
+            for selected in files:
+                selected_path = getattr(selected, "path", None)
+                if not selected_path:
+                    raise OSError("无法读取所选图片的本地路径")
+                image_path, relative = self.markdown.add_image(kind, object_id, selected_path)
+                links.append(f"![{image_path.stem}]({relative})")
+
+            content = str(editor.value or "")
+            selection = editor.selection
+            if selection is not None and min(selection.base_offset, selection.extent_offset) >= 0:
+                start = min(selection.base_offset, selection.extent_offset)
+                end = max(selection.base_offset, selection.extent_offset)
             else:
-                raise OSError("当前系统没有配置 Markdown 打开方式")
-        except OSError as error:
-            self._write_runtime_error("外部打开 Markdown 失败", traceback.format_exc())
-            self._notify_error(f"无法打开 Markdown 文档：{error}")
+                start = end = len(content)
+            before = content[:start]
+            after = content[end:]
+            prefix = "" if not before or before.endswith("\n") else "\n"
+            suffix = "" if not after or after.startswith("\n") else "\n"
+            editor.value = before + prefix + "\n".join(links) + suffix + after
+            save_source()
+            render_gallery()
+            self.page.update()
+
+        def open_external(_) -> None:
+            save_source()
+            try:
+                if os.name == "nt":
+                    os.startfile(path)  # type: ignore[attr-defined]
+                else:
+                    raise OSError("当前系统没有配置 Markdown 打开方式")
+            except OSError as error:
+                self._write_runtime_error("外部打开 Markdown 失败", traceback.format_exc())
+                self._notify_error(f"无法打开 Markdown 文档：{error}")
+
+        def close_editor(_) -> None:
+            save_source()
+            self._close_dialog()
+
+        editor.on_blur = save_source
+        render_gallery()
+        page_width = float(self.page.width or 1200)
+        page_height = float(self.page.height or 760)
+        dialog_width = max(560, min(920, page_width - 64))
+        dialog_height = max(420, min(600, page_height - 160))
+        self.page.show_dialog(
+            ft.AlertDialog(
+                modal=True,
+                title=ft.Row(
+                    [
+                        ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, size=22, color=BLUE),
+                        ft.Text(f"Markdown · {path.name}", size=20, weight=ft.FontWeight.W_700),
+                    ],
+                    spacing=9,
+                ),
+                content=ft.Column(
+                    [
+                        ft.Row(
+                            [
+                                ft.FilledTonalButton(
+                                    "插入图片",
+                                    icon=ft.Icons.ADD_PHOTO_ALTERNATE_OUTLINED,
+                                    on_click=insert_images,
+                                    style=ft.ButtonStyle(shape=rounded(11)),
+                                ),
+                                ft.TextButton(
+                                    "外部打开",
+                                    icon=ft.Icons.OPEN_IN_NEW_ROUNDED,
+                                    on_click=open_external,
+                                ),
+                                ft.Container(expand=True),
+                                ft.Text("离开输入框自动保存", size=12, color=MUTED),
+                            ],
+                            spacing=8,
+                        ),
+                        editor,
+                        gallery_section,
+                    ],
+                    spacing=12,
+                    width=dialog_width,
+                    height=dialog_height,
+                ),
+                actions=[ft.FilledButton("完成", on_click=close_editor)],
+                actions_padding=ft.Padding.only(left=20, right=20, bottom=16),
+                content_padding=ft.Padding.symmetric(horizontal=20, vertical=8),
+                inset_padding=24,
+                shape=rounded(20),
+                on_dismiss=save_source,
+            )
+        )
 
     def open_mainline_tasks_dialog(self, mainline_id: int) -> None:
         mainline = next(m for m in self.db.list_mainlines() if int(m["id"]) == mainline_id)
@@ -4030,6 +4182,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qa-screenshot", type=Path)
     parser.add_argument("--qa-compact", action="store_true")
     parser.add_argument("--qa-task-detail", action="store_true")
+    parser.add_argument("--qa-markdown")
     parser.add_argument("--qa-quick-add", action="store_true")
     parser.add_argument("--qa-input-focus", action="store_true")
     parser.add_argument("--qa-add-inspiration", action="store_true")
@@ -4097,6 +4250,7 @@ def main() -> None:
                     args.qa_screenshot,
                     args.qa_compact,
                     args.qa_task_detail,
+                    args.qa_markdown,
                     args.qa_quick_add,
                     args.qa_input_focus,
                     args.qa_add_inspiration,
@@ -4237,6 +4391,10 @@ def main() -> None:
                 target = next(iter(ui.db.list_tasks(ui.current_mid)), None)
                 if target is not None:
                     ui.open_execution_dialog(int(target["id"]))
+            if args.qa_markdown:
+                markdown_kind, raw_id = args.qa_markdown.split(":", 1)
+                ui.open_markdown(markdown_kind, int(raw_id))
+                await asyncio.sleep(0.5)
             if args.qa_boundary_error:
                 def force_isolated_failure(_event) -> None:
                     ui.active_index = ui.NAV_CALENDAR

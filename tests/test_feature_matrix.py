@@ -568,6 +568,31 @@ class MarkdownTests(TemporaryDatabaseTestCase):
         )
         self.assertEqual(list(target.parent.glob(f".{target.name}.*.tmp")), [])
 
+    def test_MD_08_images_are_copied_and_resolved_inside_workspace(self) -> None:
+        task = self.db.create_task(self.db.current_mainline_id(), "带图片的记录")
+        self.markdown.sync_all(self.db)
+        source = self.base / "截图 示例.png"
+        source.write_bytes(b"\x89PNG\r\n\x1a\nimage-payload")
+
+        first, relative = self.markdown.add_image("task", task, source)
+        second, second_relative = self.markdown.add_image("task", task, source)
+        self.assertTrue(first.is_file())
+        self.assertTrue(second.is_file())
+        self.assertNotEqual(first, second, "重复插入不能覆盖已有图片")
+        self.assertTrue(relative.startswith("../_assets/task/"))
+        content = self.markdown.read("task", task) + f"\n![截图]({relative})\n![第二张]({second_relative})\n"
+        self.markdown.write_user_edited("task", task, content)
+        self.assertEqual(self.markdown.image_paths("task", task, content), [first, second])
+
+        outside = self.base / "outside.png"
+        outside.write_bytes(b"outside")
+        escaped = content + "\n![越界](../../outside.png)\n"
+        self.assertEqual(self.markdown.image_paths("task", task, escaped), [first, second])
+        unsupported = self.base / "not-image.txt"
+        unsupported.write_text("text", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            self.markdown.add_image("task", task, unsupported)
+
 
 class RecoveryTests(TemporaryDatabaseTestCase):
     def test_ER_01_database_lock_fails_in_bounded_time(self) -> None:
