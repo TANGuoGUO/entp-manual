@@ -464,45 +464,6 @@ class DesktopE2ERunner:
         assert self.ui.db.get_thought(thought_id)["status"] == "未审视"
         return "灵感一键归档后离开候审看板，并可从独立回收站一键恢复"
 
-    def _optional_defaults_contract(self) -> str:
-        mainline_id = self.ui.db.create_mainline("E2E 无压力默认主线")
-        row = next(item for item in self.ui.db.list_mainlines() if int(item["id"]) == mainline_id)
-        assert row["focus_until"] == ""
-        assert row["next_review_date"] == ""
-        assert row["review_mode"] == "按需复盘"
-        return "承诺期限和复盘日期默认为空，按需复盘不制造时间压力"
-
-    def _review_settings(self) -> str:
-        mainline_id = self.ui.db.current_mainline_id()
-        captured: list[ft.AlertDialog] = []
-        original_show_dialog = self.page.show_dialog
-
-        def capture_dialog(dialog) -> None:
-            captured.append(dialog)
-            original_show_dialog(dialog)
-
-        self.page.show_dialog = capture_dialog
-        try:
-            self.ui.open_review_settings_dialog(mainline_id)
-        finally:
-            self.page.show_dialog = original_show_dialog
-        assert captured, "按需复盘入口没有打开设置弹窗"
-        dialog = captured[-1]
-        self.ui._protect_control_tree(dialog)
-        focus_until = _find(dialog, ft.TextField, hint_text="例如 2026-08-31；留空表示不设期限")
-        review_mode = _find(dialog, ft.RadioGroup)
-        next_review_date = _find(dialog, ft.TextField, hint_text="例如 2026-09-07；留空表示不提醒")
-        focus_until.value = "2026-08-31"
-        review_mode.value = "每周提醒"
-        next_review_date.value = "2026-09-07"
-        save = _find(dialog, ft.FilledButton, content="保存")
-        save.on_click(SimpleNamespace(control=save))
-        row = next(item for item in self.ui.db.list_mainlines() if int(item["id"]) == mainline_id)
-        assert row["focus_until"] == "2026-08-31"
-        assert row["review_mode"] == "每周提醒"
-        assert row["next_review_date"] == "2026-09-07"
-        return "按需复盘入口可打开设置，并保存期限、复盘方式和复盘日期"
-
     async def run(self) -> dict:
         await self.case("E2E-01", "启动与统一异常边界", self._startup)
         await self.case("E2E-02", "主线创建与切换", self._create_and_switch_mainline)
@@ -513,7 +474,6 @@ class DesktopE2ERunner:
         await self.case("E2E-07", "今日收集箱与过期顺延", self._today_inbox_and_carry)
         await self.case("E2E-08", "日历空状态与跨月", self._calendar_empty_and_month_navigation)
         await self.case("E2E-09", "灵感暂存与审视", self._capture_and_review_idea)
-        await self.case("E2E-10", "按需复盘设置", self._review_settings)
         await self.case(
             "DC-01",
             "灵感关系、执行与转任务数据契约",
@@ -533,12 +493,6 @@ class DesktopE2ERunner:
         await self.case("E2E-16", "空输入边界", self._empty_input_guards)
         await self.case("E2E-17", "可发现的核心入口", self._visible_entry_points)
         await self.case("E2E-18", "灵感归档回收站", self._idea_archive_recycle_bin)
-        await self.case(
-            "DC-03",
-            "可选期限与复盘默认值",
-            self._optional_defaults_contract,
-            level="DATA_CONTRACT",
-        )
         total, missing = self.ui.interaction_boundary_audit()
         coverage_gaps = [
             {

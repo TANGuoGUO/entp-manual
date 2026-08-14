@@ -78,15 +78,7 @@ def rounded(radius: int = 18) -> ft.RoundedRectangleBorder:
     return ft.RoundedRectangleBorder(radius=radius)
 
 
-def pill(
-    text: str,
-    *,
-    color: str = BLUE,
-    bgcolor: str = BLUE_SOFT,
-    icon=None,
-    on_click=None,
-    tooltip: str | None = None,
-) -> ft.Container:
+def pill(text: str, *, color: str = BLUE, bgcolor: str = BLUE_SOFT, icon=None) -> ft.Container:
     items: list[ft.Control] = []
     if icon is not None:
         items.append(ft.Icon(icon, size=15, color=color))
@@ -96,9 +88,6 @@ def pill(
         padding=ft.Padding.symmetric(horizontal=11, vertical=6),
         bgcolor=bgcolor,
         border_radius=99,
-        on_click=on_click,
-        tooltip=tooltip,
-        ink=on_click is not None,
     )
 
 
@@ -914,28 +903,12 @@ class EntpFletApp:
         mainline = next(m for m in self.db.list_mainlines() if int(m["id"]) == self.current_mid)
         tasks = self.db.list_tasks(self.current_mid)
         focus = self.db.get_focus_task(self.current_mid)
-        rhythm = str(mainline["review_mode"] or "按需复盘")
-        until = str(mainline["focus_until"] or "")
-        rhythm_text = rhythm if not until else f"{rhythm} · 至 {until}"
         self.current_header.controls = [
             ft.Row(
                 [
                     ft.Column(
                         [
-                            ft.Row(
-                                [
-                                    ft.Text("当前主线", size=13, weight=ft.FontWeight.W_700, color=BLUE),
-                                    pill(
-                                        rhythm_text,
-                                        color=MUTED,
-                                        bgcolor="#F0F1F4",
-                                        icon=ft.Icons.TUNE_ROUNDED,
-                                        on_click=lambda _, mid=int(mainline["id"]): self.open_review_settings_dialog(mid),
-                                        tooltip="调整可选期限和复盘方式",
-                                    ),
-                                ],
-                                spacing=10,
-                            ),
+                            ft.Text("当前主线", size=13, weight=ft.FontWeight.W_700, color=BLUE),
                             ft.Text(str(mainline["name"]), size=28, weight=ft.FontWeight.W_700, color=INK),
                             ft.Text(
                                 str(mainline["vision"] or ""),
@@ -967,114 +940,6 @@ class EntpFletApp:
         )
         if update:
             self.page.update()
-
-    def open_review_settings_dialog(self, mainline_id: int | None = None) -> None:
-        target_id = mainline_id or self.db.current_mainline_id()
-        mainline = next(
-            (item for item in self.db.list_mainlines() if int(item["id"]) == target_id),
-            None,
-        )
-        if mainline is None:
-            self._notify_error("这条主线不存在，可能已经被删除")
-            return
-
-        review_modes = ("按需复盘", "每周提醒", "每月提醒", "指定日期")
-        current_mode = str(mainline["review_mode"] or "按需复盘")
-        if current_mode not in review_modes:
-            current_mode = "按需复盘"
-
-        focus_until = ft.TextField(
-            value=str(mainline["focus_until"] or ""),
-            hint_text="例如 2026-08-31；留空表示不设期限",
-            text_size=15,
-            border_radius=12,
-        )
-        review_mode = ft.RadioGroup(
-            value=current_mode,
-            content=ft.Column(
-                [
-                    ft.Radio(value=mode, label=mode, active_color=BLUE)
-                    for mode in review_modes
-                ],
-                spacing=0,
-            ),
-        )
-        next_review_date = ft.TextField(
-            value=str(mainline["next_review_date"] or ""),
-            hint_text="例如 2026-09-07；留空表示不提醒",
-            text_size=15,
-            border_radius=12,
-        )
-
-        def read_optional_date(field: ft.TextField, label: str) -> str | None:
-            value = str(field.value or "").strip()
-            field.error = None
-            if not value:
-                return ""
-            try:
-                date.fromisoformat(value)
-            except ValueError:
-                field.error = f"{label}请使用 YYYY-MM-DD 格式"
-                return None
-            return value
-
-        def save(_) -> None:
-            focus_value = read_optional_date(focus_until, "结束日期")
-            review_value = read_optional_date(next_review_date, "复盘日期")
-            if focus_value is None or review_value is None:
-                self.page.update()
-                return
-            selected_mode = str(review_mode.value or "按需复盘")
-            if selected_mode not in review_modes:
-                selected_mode = "按需复盘"
-            self.db.update_mainline(
-                target_id,
-                focus_until=focus_value,
-                review_mode=selected_mode,
-                next_review_date=review_value,
-            )
-            self._sync_markdown()
-            self._close_dialog()
-            self.refresh_current_sections()
-
-        self.page.show_dialog(
-            ft.AlertDialog(
-                modal=True,
-                title=ft.Text("主线节奏", size=22, weight=ft.FontWeight.W_700),
-                content=ft.Column(
-                    [
-                        ft.Text(
-                            "时间限制和复盘日期都是可选的。全部留空时，系统不会倒计时或催促。",
-                            size=14,
-                            color=MUTED,
-                        ),
-                        ft.Text("可选结束日期", size=13, weight=ft.FontWeight.W_600, color=INK),
-                        focus_until,
-                        ft.Text("复盘方式", size=13, weight=ft.FontWeight.W_600, color=INK),
-                        review_mode,
-                        ft.Text("下次复盘日期（可选）", size=13, weight=ft.FontWeight.W_600, color=INK),
-                        next_review_date,
-                    ],
-                    tight=True,
-                    spacing=10,
-                    width=520,
-                ),
-                actions=[
-                    ft.TextButton("取消", on_click=lambda _: self._close_dialog()),
-                    ft.FilledButton(
-                        "保存",
-                        on_click=save,
-                        style=ft.ButtonStyle(
-                            shape=rounded(12),
-                            bgcolor=BLUE,
-                            color=ft.Colors.WHITE,
-                        ),
-                    ),
-                ],
-                shape=rounded(20),
-                scrollable=True,
-            )
-        )
 
     def _focus_card(self, focus) -> ft.Card:
         if not focus:
@@ -2157,7 +2022,7 @@ class EntpFletApp:
                         ft.Container(width=7, height=58, bgcolor=BLUE, border_radius=99),
                         ft.Column(
                             [
-                                ft.Row([pill("当前主线", color=BLUE, bgcolor=BLUE_SOFT), ft.Text(str(current["review_mode"] or "按需复盘"), size=13, color=MUTED)], spacing=10),
+                                pill("当前主线", color=BLUE, bgcolor=BLUE_SOFT),
                                 ft.Text(str(current["name"]), size=22, weight=ft.FontWeight.W_700, color=INK),
                                 ft.Text(str(current["vision"] or ""), size=14, color=MUTED),
                             ],
@@ -2269,7 +2134,6 @@ class EntpFletApp:
             ft.Row(
                 [
                     ft.Container(width=10, height=10, bgcolor=str(mainline["color"] or BLUE), border_radius=99),
-                    ft.Text(str(mainline["review_mode"] or "按需复盘"), size=12, color=MUTED),
                     ft.Container(expand=True),
                     ft.IconButton(
                         ft.Icons.EDIT_NOTE_ROUNDED,

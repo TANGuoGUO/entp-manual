@@ -589,7 +589,6 @@ class ENTPManualApp(tk.Tk):
         tk.Frame(panel, bg=BORDER, height=1).pack(fill="x", padx=20, pady=(8, 8))
         utilities = [
             ("全部文档", self.open_markdown_folder, "\ue8a5"),
-            ("设置", self.open_focus_settings_dialog, "\ue713"),
         ]
         footer = tk.Frame(panel, bg=SIDEBAR)
         footer.pack(fill="x", padx=12)
@@ -884,16 +883,9 @@ class ENTPManualApp(tk.Tk):
             f"{date.today().year}年{date.today().month}月{date.today().day}日"
             f" · 周{weekdays[date.today().weekday()]}"
         )
-        focus_text = f"节奏：{mainline['focus_until'] or '自由推进'}"
-        review_text = f"复盘：{mainline['review_mode'] or '按需'}"
         tk.Label(
-            settings_row, text=f"{date_text}    ·    {focus_text}    ·    {review_text}",
+            settings_row, text=date_text,
             bg=BG, fg=MUTED, font=(FONT, 10),
-        ).pack(side="left")
-        tk.Button(
-            settings_row, text="调整", command=self.open_focus_settings_dialog,
-            bg=BG, fg=BLUE, activebackground=BLUE_SOFT, activeforeground=BLUE,
-            relief="flat", bd=0, cursor="hand2", padx=12, font=(FONT, 10),
         ).pack(side="left")
         tk.Frame(header, bg=BORDER, height=1).pack(fill="x", pady=(0, 18))
 
@@ -1282,58 +1274,6 @@ class ENTPManualApp(tk.Tk):
             self.show_view("主线执行")
 
         button(body, "保存", save, primary=True).pack(anchor="e", pady=18)
-
-    def open_focus_settings_dialog(self) -> None:
-        mainline_id = self.db.current_mainline_id()
-        mainline = next(
-            row for row in self.db.list_mainlines() if int(row["id"]) == mainline_id
-        )
-        win, body = self.dialog("专注设置", "560x480")
-        tk.Label(
-            body,
-            text="时间限制和复盘提醒都是可选项。留空时，系统不会倒计时或催促。",
-            bg=BG, fg=MUTED, font=(FONT, 9), wraplength=470, justify="left",
-        ).pack(anchor="w", pady=(0, 12))
-        focus_var = tk.StringVar(value=mainline["focus_until"])
-        review_var = tk.StringVar(value=mainline["review_mode"] or "按需复盘")
-        next_review_var = tk.StringVar(value=mainline["next_review_date"])
-        self.form_label(body, "可选结束日期（YYYY-MM-DD）")
-        focus_entry = entry(body, focus_var)
-        focus_entry.pack(fill="x")
-        self.form_label(body, "复盘方式")
-        ttk.Combobox(
-            body,
-            values=("按需复盘", "每周提醒", "每月提醒", "指定日期"),
-            textvariable=review_var,
-            state="readonly",
-        ).pack(fill="x")
-        self.form_label(body, "下次复盘日期（可选）")
-        next_entry = entry(body, next_review_var)
-        next_entry.pack(fill="x")
-
-        def validate_optional_day(value: str) -> bool:
-            if not value.strip():
-                return True
-            try:
-                date.fromisoformat(value.strip())
-                return True
-            except ValueError:
-                return False
-
-        def save() -> None:
-            if not validate_optional_day(focus_var.get()) or not validate_optional_day(next_review_var.get()):
-                messagebox.showwarning("日期格式不正确", "日期请使用 YYYY-MM-DD，或保持为空。", parent=win)
-                return
-            self.db.update_mainline(
-                mainline_id,
-                focus_until=focus_var.get(),
-                review_mode=review_var.get(),
-                next_review_date=next_review_var.get(),
-            )
-            win.destroy()
-            self.show_view("主线执行")
-
-        button(body, "保存设置", save, primary=True).pack(anchor="e", pady=20)
 
     def open_task_execution_dialog(self, task_id: int) -> None:
         task = self.db.get_task(task_id)

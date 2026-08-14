@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.0.1-Setup.exe">下载 Windows 安装版</a>
+  <a href="https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.0.2-Setup.exe">下载 Windows 安装版</a>
   ·
   <a href="https://github.com/TANGuoGUO/entp-manual/releases/latest">版本说明</a>
   ·
@@ -34,8 +34,6 @@
 - **新灵感先记一句话，不急着证明它有没有用。** 它进入候审区，不会马上变成任务，也不要求立刻分类整理。
 - **没动力时，先去审视以前留下的兴趣。** 有些灵感和主线有关，有些完全无关。整理它们不是为了硬找答案，而是重新找回一点兴趣；想继续原任务、试一个新想法，或者什么都不选，都可以。
 - **想明白不算完成，做过的事情才留下记录。** 任务被拆成下一步的小动作，每次执行都能记下行动和结果；完成后，它会出现在当天的清单和日历里。
-
-时间限制和复盘日期都是可选的，默认不开启。这里没有连续天数，也不会因为一天没做就把过去的努力清零。
 
 ## 功能怎么用
 
@@ -160,14 +158,14 @@ markdown/
 最初的产品研究还讨论过情绪表达、沟通方式、7/14/30 天承诺周期和周期复选。这些内容没有完整进入 2.0：
 
 - 情绪翻译器和对话模式识别尚未开发。
-- 承诺期限与复盘日期已有数据基础，但当前界面没有完整流程，而且默认关闭。
+- 承诺期限与复盘日期没有作为 2.0 功能开放。
 - 灵感关联、执行记录和转任务已有部分数据能力，当前 Flet 页面尚未全部开放。
 
 当前版本只完成“选择一条主线—记录新灵感—继续执行—按日期保存结果”这条流程。README 不把规划中的方向写成已有功能。
 
 ## 下载和安装
 
-[直接下载 Windows 安装版](https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.0.1-Setup.exe)
+[直接下载 Windows 安装版](https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.0.2-Setup.exe)
 
 安装时可以选择安装目录、桌面快捷方式，以及是否在登录 Windows 后于后台启动。程序支持系统托盘隐藏和标准 Windows 卸载。
 
