@@ -472,6 +472,37 @@ class DesktopE2ERunner:
         assert row["review_mode"] == "按需复盘"
         return "承诺期限和复盘日期默认为空，按需复盘不制造时间压力"
 
+    def _review_settings(self) -> str:
+        mainline_id = self.ui.db.current_mainline_id()
+        captured: list[ft.AlertDialog] = []
+        original_show_dialog = self.page.show_dialog
+
+        def capture_dialog(dialog) -> None:
+            captured.append(dialog)
+            original_show_dialog(dialog)
+
+        self.page.show_dialog = capture_dialog
+        try:
+            self.ui.open_review_settings_dialog(mainline_id)
+        finally:
+            self.page.show_dialog = original_show_dialog
+        assert captured, "按需复盘入口没有打开设置弹窗"
+        dialog = captured[-1]
+        self.ui._protect_control_tree(dialog)
+        focus_until = _find(dialog, ft.TextField, hint_text="例如 2026-08-31；留空表示不设期限")
+        review_mode = _find(dialog, ft.RadioGroup)
+        next_review_date = _find(dialog, ft.TextField, hint_text="例如 2026-09-07；留空表示不提醒")
+        focus_until.value = "2026-08-31"
+        review_mode.value = "每周提醒"
+        next_review_date.value = "2026-09-07"
+        save = _find(dialog, ft.FilledButton, content="保存")
+        save.on_click(SimpleNamespace(control=save))
+        row = next(item for item in self.ui.db.list_mainlines() if int(item["id"]) == mainline_id)
+        assert row["focus_until"] == "2026-08-31"
+        assert row["review_mode"] == "每周提醒"
+        assert row["next_review_date"] == "2026-09-07"
+        return "按需复盘入口可打开设置，并保存期限、复盘方式和复盘日期"
+
     async def run(self) -> dict:
         await self.case("E2E-01", "启动与统一异常边界", self._startup)
         await self.case("E2E-02", "主线创建与切换", self._create_and_switch_mainline)
@@ -482,6 +513,7 @@ class DesktopE2ERunner:
         await self.case("E2E-07", "今日收集箱与过期顺延", self._today_inbox_and_carry)
         await self.case("E2E-08", "日历空状态与跨月", self._calendar_empty_and_month_navigation)
         await self.case("E2E-09", "灵感暂存与审视", self._capture_and_review_idea)
+        await self.case("E2E-10", "按需复盘设置", self._review_settings)
         await self.case(
             "DC-01",
             "灵感关系、执行与转任务数据契约",
@@ -511,26 +543,21 @@ class DesktopE2ERunner:
         coverage_gaps = [
             {
                 "id": "GAP-01",
-                "feature": "7/14/30 天承诺与可选复盘设置",
-                "reason": "字段存在于 SQLite，但当前 Flet 主线编辑页没有可操作控件",
-            },
-            {
-                "id": "GAP-02",
                 "feature": "任务优先级编辑",
                 "reason": "今日页可以按优先级排序，但当前 Flet 任务详情没有修改优先级的入口",
             },
             {
-                "id": "GAP-03",
+                "id": "GAP-02",
                 "feature": "灵感关联、执行记录与一键转任务",
                 "reason": "数据库方法和 Markdown 同步存在，但当前 Flet 灵感详情只暴露状态、标签和正文",
             },
             {
-                "id": "GAP-04",
+                "id": "GAP-03",
                 "feature": "内置 Markdown 源码编辑与实时预览",
                 "reason": "旧 Tkinter 入口仍有编辑器；当前 Flet 入口只调用系统外部 Markdown 应用",
             },
             {
-                "id": "GAP-05",
+                "id": "GAP-04",
                 "feature": "系统保存/选择文件窗口",
                 "reason": "Windows UI Automation 无法识别 Flutter 控件树；备份内容、确认、恢复与回滚已覆盖，原生文件选择需人工点击",
             },

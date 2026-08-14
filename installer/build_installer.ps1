@@ -18,8 +18,8 @@ try {
         --add-data "assets:assets" `
         --product-name "ENTP Manual" `
         --file-description "Curiosity Momentum Loop" `
-        --product-version "2.0.0" `
-        --file-version "2.0.0.0" `
+        --product-version "2.0.1" `
+        --file-version "2.0.1.0" `
         --company-name "ENTP Manual" -y
     if ($LASTEXITCODE -ne 0) { throw "EXE packaging failed: $LASTEXITCODE" }
 
