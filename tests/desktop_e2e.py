@@ -125,33 +125,6 @@ class DesktopE2ERunner:
 
     def _edit_task_detail(self) -> str:
         task_id = int(self.context["task_id"])
-        self.ui.select_task(task_id)
-        panel = self.ui.detail_holder.content
-        title = _find(panel, ft.TextField, value="E2E 一次点击新增任务")
-        description = _find(panel, ft.TextField, hint_text="输入内容，记录背景、思路或判断……")
-        next_action = _find(panel, ft.TextField, label="下一步最小行动")
-        title.value = "E2E 已整理任务"
-        description.value = "从界面任务详情保存的背景。"
-        next_action.value = "先完成 15 分钟最小实验"
-        next_action.on_blur(SimpleNamespace(control=next_action))
-        task = self.ui.db.get_task(task_id)
-        assert task["title"] == "E2E 已整理任务"
-        assert task["next_action"] == "先完成 15 分钟最小实验"
-        assert "从界面任务详情" in self.ui.markdown.read("task", task_id)
-        return "任务详情标题、正文、最小行动已落库并同步 Markdown"
-
-    def _focus_and_execute_task(self) -> str:
-        task_id = int(self.context["task_id"])
-        self.ui.select_task(task_id)
-        panel = self.ui.detail_holder.content
-        focus_button = next(
-            control
-            for control in _walk(panel)
-            if isinstance(control, ft.IconButton) and control.tooltip == "设为当前任务"
-        )
-        focus_button.on_click(SimpleNamespace(control=focus_button))
-        assert int(self.ui.db.get_focus_task(self.ui.current_mid)["id"]) == task_id
-        before = len(self.ui.db.task_execution_logs(task_id))
         captured: list[ft.AlertDialog] = []
         original_show_dialog = self.page.show_dialog
 
@@ -161,37 +134,78 @@ class DesktopE2ERunner:
 
         self.page.show_dialog = capture_dialog
         try:
-            self.ui.open_execution_dialog(task_id)
+            self.ui.select_task(task_id)
         finally:
             self.page.show_dialog = original_show_dialog
-        assert captured, "记录执行按钮没有打开弹窗"
+        assert captured, "点击任务没有打开详情弹窗"
         dialog = captured[-1]
         self.ui._protect_control_tree(dialog)
-        action = _find(dialog, ft.TextField, label="我实际做了什么")
-        result = _find(dialog, ft.TextField, label="产生了什么结果 / 发现")
-        next_action = _find(dialog, ft.TextField, label="接下来最小的一步（可选）")
-        action.value = "完成 15 分钟最小实验"
-        result.value = "得到可验证结果"
-        next_action.value = "整理实验结论"
-        save = _find(dialog, ft.FilledButton, content="保存记录")
-        save.on_click(SimpleNamespace(control=save))
-        assert len(self.ui.db.task_execution_logs(task_id)) == before + 1
-        assert "完成 15 分钟最小实验" in self.ui.markdown.read("task", task_id)
-        return "通过详情按钮和执行弹窗完成焦点、行动、成果及下一步闭环"
+        title = _find(dialog, ft.TextField, value="E2E 一次点击新增任务")
+        description = _find(dialog, ft.TextField, hint_text="输入内容，记录背景、思路或判断……")
+        title.value = "E2E 已整理任务"
+        description.value = "从界面任务详情保存的背景。"
+        description.on_blur(SimpleNamespace(control=description))
+        task = self.ui.db.get_task(task_id)
+        assert task["title"] == "E2E 已整理任务"
+        assert task["description"] == "从界面任务详情保存的背景。"
+        assert "从界面任务详情" in self.ui.markdown.read("task", task_id)
+        self.ui.close_task_detail()
+        return "任务详情以弹窗打开，标题和正文已自动保存并同步 Markdown"
+
+    def _focus_and_execute_task(self) -> str:
+        task_id = int(self.context["task_id"])
+        captured: list[ft.AlertDialog] = []
+        original_show_dialog = self.page.show_dialog
+
+        def capture_dialog(dialog) -> None:
+            captured.append(dialog)
+            original_show_dialog(dialog)
+
+        self.page.show_dialog = capture_dialog
+        try:
+            self.ui.select_task(task_id)
+        finally:
+            self.page.show_dialog = original_show_dialog
+        dialog = captured[-1]
+        self.ui._protect_control_tree(dialog)
+        focus_button = next(
+            control
+            for control in _walk(dialog)
+            if isinstance(control, ft.IconButton)
+            and control.tooltip in {"设为当前任务", "当前任务"}
+        )
+        if focus_button.tooltip == "设为当前任务":
+            focus_button.on_click(SimpleNamespace(control=focus_button))
+        assert int(self.ui.db.get_focus_task(self.ui.current_mid)["id"]) == task_id
+        before = len(self.ui.db.task_execution_logs(task_id))
+        self.ui.close_task_detail()
+        finish = _find(self.ui.focus_holder.content, ft.FilledButton, content="完成当前任务")
+        assert finish.on_click is not None
+        assert len(self.ui.db.task_execution_logs(task_id)) == before
+        return "任务可从弹窗设为当前；焦点区提供无额外表单的直接完成入口"
 
     def _complete_reopen_calendar(self) -> str:
         task_id = int(self.context["task_id"])
-        self.ui.select_task(task_id)
-        checkbox = next(
-            control for control in _walk(self.ui.detail_holder.content) if isinstance(control, ft.Checkbox)
-        )
-        checkbox.value = True
-        checkbox.on_change(SimpleNamespace(control=checkbox))
+        shown: list[ft.Control] = []
+        original_show_dialog = self.page.show_dialog
+
+        def capture_dialog(dialog) -> None:
+            shown.append(dialog)
+            original_show_dialog(dialog)
+
+        self.page.show_dialog = capture_dialog
+        try:
+            finish = _find(self.ui.focus_holder.content, ft.FilledButton, content="完成当前任务")
+            finish.on_click(SimpleNamespace(control=finish))
+        finally:
+            self.page.show_dialog = original_show_dialog
+        assert not any(isinstance(item, ft.AlertDialog) for item in shown)
         today = date.today().isoformat()
         assert any(int(row["task_id"]) == task_id for row in self.ui.db.completed_entries_on(today))
-        self.ui.select_task(task_id)
         checkbox = next(
-            control for control in _walk(self.ui.detail_holder.content) if isinstance(control, ft.Checkbox)
+            control
+            for control in _walk(self.ui.task_holder)
+            if isinstance(control, ft.Checkbox) and bool(control.value)
         )
         checkbox.value = False
         checkbox.on_change(SimpleNamespace(control=checkbox))

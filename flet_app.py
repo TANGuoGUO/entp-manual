@@ -1185,20 +1185,14 @@ class EntpFletApp:
             ),
         ]
         self.focus_holder.content = self._focus_card(focus)
-        self.focus_holder.visible = self.selected_task_id is None
+        self.focus_holder.visible = True
         self.task_holder.controls = self._task_section(tasks)
         self.calendar_holder.content = self._calendar_card(self.today.year, self.today.month)
-        selected = next(
-            (task for task in tasks if int(task["id"]) == self.selected_task_id),
-            None,
-        )
-        if self.selected_task_id is not None and selected is None:
+        if self.selected_task_id is not None and not any(
+            int(task["id"]) == self.selected_task_id for task in tasks
+        ):
             self.selected_task_id = None
-        self.detail_holder.content = (
-            self._task_detail_panel(selected)
-            if selected is not None
-            else self.calendar_holder
-        )
+        self.detail_holder.content = self.calendar_holder
         if update:
             self.page.update()
 
@@ -1225,7 +1219,6 @@ class EntpFletApp:
             )
         else:
             task_id = int(focus["id"])
-            next_action = str(focus["next_action"] or "把它改写成一个 15 分钟内能开始的小动作")
             body = ft.Column(
                 [
                     ft.Row(
@@ -1248,17 +1241,16 @@ class EntpFletApp:
                                 ft.Icon(ft.Icons.NEAR_ME_ROUNDED, size=20, color=BLUE),
                                 ft.Column(
                                     [
-                                        ft.Text("下一步最小行动", size=12, color=MUTED),
-                                        ft.Text(next_action, size=16, weight=ft.FontWeight.W_600, color=INK),
+                                        ft.Text("先开始三分钟", size=12, color=MUTED),
+                                        ft.Text(
+                                            "我们先干三分钟，能坚持三分钟就是胜利",
+                                            size=16,
+                                            weight=ft.FontWeight.W_600,
+                                            color=INK,
+                                        ),
                                     ],
                                     spacing=2,
                                     expand=True,
-                                ),
-                                ft.IconButton(
-                                    ft.Icons.EDIT_OUTLINED,
-                                    tooltip="修改下一步",
-                                    icon_color=MUTED,
-                                    on_click=lambda _: self.select_task(task_id),
                                 ),
                             ]
                         ),
@@ -1269,9 +1261,9 @@ class EntpFletApp:
                     ft.Row(
                         [
                             ft.FilledButton(
-                                "记录一次执行",
-                                icon=ft.Icons.ADD_TASK_ROUNDED,
-                                on_click=lambda _: self.open_execution_dialog(task_id),
+                                "完成当前任务",
+                                icon=ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED,
+                                on_click=lambda _: self.complete_current_task(task_id),
                                 style=ft.ButtonStyle(
                                     shape=rounded(12),
                                     padding=ft.Padding.symmetric(horizontal=14, vertical=10),
@@ -1344,8 +1336,7 @@ class EntpFletApp:
         focused = bool(task["is_focus"])
         selected = task_id == self.selected_task_id
         title = str(task["title"])
-        next_action = str(task["next_action"] or "")
-        status_hint = "现实完成已记入日历" if completed else (next_action or " ")
+        status_hint = "现实完成已记入日历" if completed else "点击查看详情"
         trailing = (
             pill("当前", color=BLUE, bgcolor=BLUE_SOFT)
             if focused and not completed
@@ -1411,7 +1402,7 @@ class EntpFletApp:
             spacing=0,
         )
 
-    def _task_detail_panel(self, task) -> ft.Card:
+    def _task_detail_dialog(self, task) -> ft.AlertDialog:
         task_id = int(task["id"])
         completed = str(task["status"]) == "完成"
         focused = bool(task["is_focus"])
@@ -1432,16 +1423,7 @@ class EntpFletApp:
             max_lines=18,
             text_size=15,
             content_padding=0,
-        )
-        next_action_field = ft.TextField(
-            value=str(task["next_action"] or ""),
-            label="下一步最小行动",
-            label_style=ft.TextStyle(size=13, color=MUTED),
-            hint_text="写下可以马上开始的一步",
-            text_size=14,
-            border_radius=12,
-            border_color=LINE,
-            focused_border_color=BLUE,
+            expand=True,
         )
 
         def save_fields(_) -> None:
@@ -1450,74 +1432,112 @@ class EntpFletApp:
                 task_id,
                 title=title,
                 description=description_field.value,
-                next_action=next_action_field.value,
             )
             self._sync_markdown()
+            self.task_holder.controls = self._task_section(
+                self.db.list_tasks(self.current_mid)
+            )
 
         title_field.on_blur = save_fields
         description_field.on_blur = save_fields
-        next_action_field.on_blur = save_fields
 
-        return ft.Card(
-            content=ft.Container(
-                content=ft.Column(
-                    [
-                        ft.Row(
-                            [
-                                ft.Checkbox(
-                                    value=completed,
-                                    active_color=GREEN,
-                                    on_change=lambda e, tid=task_id: self.toggle_task(
-                                        tid, bool(e.control.value)
-                                    ),
-                                ),
-                                pill(
-                                    "已完成" if completed else "待执行",
-                                    color=GREEN if completed else BLUE,
-                                    bgcolor=GREEN_SOFT if completed else BLUE_SOFT,
-                                ),
-                                ft.Container(expand=True),
-                                ft.IconButton(
-                                    ft.Icons.FLAG_ROUNDED if focused else ft.Icons.FLAG_OUTLINED,
-                                    tooltip="设为当前任务",
-                                    icon_color=BLUE if focused else MUTED,
-                                    on_click=lambda _: self.set_focus_task(task_id),
-                                    disabled=completed,
-                                ),
-                                ft.IconButton(
-                                    ft.Icons.CLOSE_ROUNDED,
-                                    tooltip="关闭任务详情",
-                                    icon_color=MUTED,
-                                    on_click=lambda _: self.close_task_detail(),
-                                ),
-                            ],
-                            spacing=6,
-                        ),
-                        title_field,
-                        description_field,
-                        next_action_field,
-                        ft.Divider(height=1, color=LINE),
-                        ft.Row(
-                            [
-                                ft.TextButton(
-                                    "打开 Markdown",
-                                    icon=ft.Icons.DESCRIPTION_OUTLINED,
-                                    on_click=lambda _: self.open_markdown("task", task_id),
-                                ),
-                                ft.Text("离开输入框时自动保存", size=12, color=MUTED),
-                            ],
-                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                        ),
-                    ],
-                    spacing=14,
-                ),
-                padding=ft.Padding.symmetric(horizontal=24, vertical=20),
-                height=610,
+        def close_detail(_) -> None:
+            save_fields(None)
+            self.close_task_detail()
+
+        def toggle_and_close(event) -> None:
+            save_fields(None)
+            self.close_task_detail()
+            self.toggle_task(task_id, bool(event.control.value))
+
+        def make_focus(_) -> None:
+            save_fields(None)
+            self.set_focus_task(task_id)
+
+        def dismissed(_) -> None:
+            save_fields(None)
+            self._finish_task_detail_state()
+
+        header = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Checkbox(
+                        value=completed,
+                        active_color=GREEN,
+                        on_change=toggle_and_close,
+                    ),
+                    pill(
+                        "已完成" if completed else "待执行",
+                        color=GREEN if completed else BLUE,
+                        bgcolor=GREEN_SOFT if completed else BLUE_SOFT,
+                    ),
+                    ft.Container(expand=True),
+                    ft.IconButton(
+                        ft.Icons.FLAG_ROUNDED if focused else ft.Icons.FLAG_OUTLINED,
+                        tooltip="当前任务" if focused else "设为当前任务",
+                        icon_color=BLUE if focused else MUTED,
+                        on_click=make_focus,
+                        disabled=completed,
+                    ),
+                    ft.IconButton(
+                        ft.Icons.CLOSE_ROUNDED,
+                        tooltip="关闭任务详情",
+                        icon_color=MUTED,
+                        on_click=close_detail,
+                    ),
+                ],
+                spacing=6,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            elevation=0,
+            padding=ft.Padding.only(left=16, right=12, top=10, bottom=10),
+        )
+        body = ft.Container(
+            content=ft.Column(
+                [title_field, description_field],
+                spacing=14,
+                expand=True,
+            ),
+            padding=ft.Padding.symmetric(horizontal=24, vertical=20),
+            expand=True,
+        )
+        footer = ft.Container(
+            content=ft.Row(
+                [
+                    ft.TextButton(
+                        "打开 Markdown",
+                        icon=ft.Icons.DESCRIPTION_OUTLINED,
+                        on_click=lambda _: self.open_markdown("task", task_id),
+                    ),
+                    ft.Text("离开输入框时自动保存", size=12, color=MUTED),
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            ),
+            padding=ft.Padding.only(left=16, right=20, top=8, bottom=10),
+        )
+        content = ft.Column(
+            [
+                header,
+                ft.Divider(height=1, color=LINE),
+                body,
+                ft.Divider(height=1, color=LINE),
+                footer,
+            ],
+            spacing=0,
+            width=680,
+            height=580,
+        )
+        return ft.AlertDialog(
+            modal=True,
+            content=content,
+            content_padding=0,
+            inset_padding=24,
             bgcolor=SURFACE,
             shape=rounded(20),
-            variant=ft.CardVariant.OUTLINED,
+            elevation=18,
+            shadow_color="#33000000",
+            barrier_color="#2E111827",
+            alignment=ft.Alignment(0.24, 0),
+            on_dismiss=dismissed,
         )
 
     def _calendar_card(self, year: int, month: int) -> ft.Card:
@@ -3548,6 +3568,10 @@ class EntpFletApp:
         self._sync_markdown()
         self.refresh_current_sections()
 
+    def complete_current_task(self, task_id: int) -> None:
+        """Finish the focus task immediately; the completion becomes calendar evidence."""
+        self.toggle_task(task_id, True)
+
     def focus_quick_input(self, _=None) -> None:
         self.page.run_task(self.quick_task_input.focus)
 
@@ -3582,17 +3606,20 @@ class EntpFletApp:
         if not task:
             return
         self.selected_task_id = task_id
-        self.focus_holder.visible = False
         self.task_holder.controls = self._task_section(self.db.list_tasks(self.current_mid))
-        self.detail_holder.content = self._task_detail_panel(task)
+        self.page.show_dialog(self._task_detail_dialog(task))
         self.page.update()
 
-    def close_task_detail(self) -> None:
+    def _finish_task_detail_state(self) -> None:
         self.selected_task_id = None
         self.focus_holder.visible = True
         self.task_holder.controls = self._task_section(self.db.list_tasks(self.current_mid))
         self.detail_holder.content = self.calendar_holder
         self.page.update()
+
+    def close_task_detail(self) -> None:
+        self._finish_task_detail_state()
+        self._close_dialog()
 
     def set_focus_task(self, task_id: int) -> None:
         self.db.set_focus_task(task_id)
