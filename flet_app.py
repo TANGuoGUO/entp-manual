@@ -2327,13 +2327,11 @@ class EntpFletApp:
                             spacing=5,
                             expand=True,
                         ),
-                        ft.Column(
-                            [
-                                ft.Text(f"{int(current_stats['done'] or 0)}/{int(current_stats['total'] or 0)}", size=22, weight=ft.FontWeight.W_700, color=INK),
-                                ft.Text("现实完成", size=12, color=MUTED),
-                            ],
-                            spacing=1,
-                            horizontal_alignment=ft.CrossAxisAlignment.END,
+                        ft.Text(
+                            f"已经完成了 {int(current_stats['done'] or 0)} 项任务",
+                            size=14,
+                            weight=ft.FontWeight.W_600,
+                            color=MUTED,
                         ),
                         ft.OutlinedButton(
                             "回到执行区",
