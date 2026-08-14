@@ -593,6 +593,24 @@ class MarkdownTests(TemporaryDatabaseTestCase):
         with self.assertRaises(ValueError):
             self.markdown.add_image("task", task, unsupported)
 
+    def test_MD_09_clipboard_image_bytes_are_stored_as_attachment(self) -> None:
+        task = self.db.create_task(self.db.current_mainline_id(), "粘贴图片")
+        self.markdown.sync_all(self.db)
+        payload = (Path(__file__).resolve().parents[1] / "assets" / "app-icon.png").read_bytes()
+
+        image, relative = self.markdown.add_image_bytes("task", task, payload)
+        self.assertEqual(image.read_bytes(), payload)
+        self.assertTrue(relative.startswith("../_assets/task/"))
+
+        content = self.markdown.read("task", task) + f"\n![截图]({relative})\n"
+        self.markdown.write_user_edited("task", task, content)
+        self.assertEqual(self.markdown.image_paths("task", task, content), [image])
+
+        with self.assertRaisesRegex(ValueError, "没有可用的图片"):
+            self.markdown.add_image_bytes("task", task, b"")
+        with self.assertRaisesRegex(ValueError, "格式无法识别"):
+            self.markdown.add_image_bytes("task", task, b"not-an-image")
+
 
 class RecoveryTests(TemporaryDatabaseTestCase):
     def test_ER_01_database_lock_fails_in_bounded_time(self) -> None:

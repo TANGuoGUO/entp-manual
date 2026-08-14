@@ -369,8 +369,14 @@ class DesktopE2ERunner:
             return [SimpleNamespace(path=str(image))]
 
         original_pick_files = self.ui.file_picker.pick_files
+        original_get_image = self.ui.clipboard.get_image
+
+        async def clipboard_image():
+            return (Path(__file__).resolve().parents[1] / "assets" / "app-icon.png").read_bytes()
+
         self.page.show_dialog = capture_dialog
         self.ui.file_picker.pick_files = choose_image
+        self.ui.clipboard.get_image = clipboard_image
         try:
             self.ui.open_markdown("task", task_id)
             dialog = captured[-1]
@@ -382,16 +388,20 @@ class DesktopE2ERunner:
             )
             insert_image = _find(dialog, ft.FilledTonalButton, content="插入图片")
             await insert_image.on_click(SimpleNamespace(control=insert_image))
+            paste_image = _find(dialog, ft.TextButton, content="粘贴图片")
+            await paste_image.on_click(SimpleNamespace(control=paste_image))
             assert self.ui.markdown.image_paths("task", task_id, str(editor.value))
+            assert len(self.ui.markdown.image_paths("task", task_id, str(editor.value))) == 2
             editor.value = str(editor.value) + "\nE2E 用户自由 Markdown 正文。\n"
             editor.on_blur(SimpleNamespace(control=editor))
         finally:
             self.page.show_dialog = original_show_dialog
             self.ui.file_picker.pick_files = original_pick_files
+            self.ui.clipboard.get_image = original_get_image
         assert "E2E 用户自由 Markdown 正文" in self.ui.markdown.read("task", task_id)
         self.ui._sync_markdown()
         assert "E2E 用户自由 Markdown 正文" in self.ui.markdown.read("task", task_id)
-        return "应用内 Markdown 可编辑、插入图片并自动保存，系统刷新后内容仍保留"
+        return "应用内 Markdown 可编辑、选图或粘贴图片并自动保存，系统刷新后内容仍保留"
 
     async def _backup_roundtrip(self) -> str:
         archive = self.report_path.parent / "desktop-e2e.entp.zip"

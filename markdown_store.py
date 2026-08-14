@@ -92,6 +92,58 @@ class MarkdownStore:
         relative = os.path.relpath(destination, document.parent).replace(os.sep, "/")
         return destination, relative
 
+    def add_image_bytes(
+        self,
+        kind: str,
+        object_id: int,
+        image_bytes: bytes,
+        *,
+        stem: str = "pasted-image",
+    ) -> tuple[Path, str]:
+        """Store an encoded clipboard image beside the managed Markdown tree."""
+        if not image_bytes:
+            raise ValueError("剪贴板中没有可用的图片")
+
+        if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+            suffix = ".png"
+        elif image_bytes.startswith(b"\xff\xd8\xff"):
+            suffix = ".jpg"
+        elif image_bytes.startswith((b"GIF87a", b"GIF89a")):
+            suffix = ".gif"
+        elif image_bytes.startswith(b"BM"):
+            suffix = ".bmp"
+        elif (
+            len(image_bytes) >= 12
+            and image_bytes.startswith(b"RIFF")
+            and image_bytes[8:12] == b"WEBP"
+        ):
+            suffix = ".webp"
+        else:
+            raise ValueError("剪贴板图片格式无法识别，请改用“插入图片”")
+
+        document = self.path_for(kind, object_id)
+        _directory, prefix = KIND_INFO[kind]
+        attachment_dir = self.root / "_assets" / kind / f"{prefix}{int(object_id):04d}"
+        attachment_dir.mkdir(parents=True, exist_ok=True)
+        safe_stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "-", stem).strip("-")
+        safe_stem = safe_stem or "pasted-image"
+        destination = attachment_dir / f"{safe_stem}{suffix}"
+        if destination.exists():
+            destination = attachment_dir / f"{safe_stem}-{uuid.uuid4().hex[:8]}{suffix}"
+
+        temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temporary.open("xb") as handle:
+                handle.write(image_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+        relative = os.path.relpath(destination, document.parent).replace(os.sep, "/")
+        return destination, relative
+
     def image_paths(self, kind: str, object_id: int, content: str) -> list[Path]:
         """Resolve local image references without allowing paths outside this workspace."""
         document = self.path_for(kind, object_id)

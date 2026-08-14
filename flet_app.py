@@ -172,6 +172,8 @@ class EntpFletApp:
         self.page.update = self._protected_page_update
         self.file_picker = ft.FilePicker()
         self.page.services.append(self.file_picker)
+        self.clipboard = ft.Clipboard()
+        self.page.services.append(self.clipboard)
         self.db = Database(db_path)
         markdown_root = (
             ROOT / "markdown"
@@ -3674,7 +3676,10 @@ class EntpFletApp:
             border_color=LINE,
             focused_border_color=BLUE,
             content_padding=16,
+            autofocus=True,
         )
+        editor_focused = {"value": True}
+        previous_keyboard_handler = self.page.on_keyboard_event
         gallery = ft.Row(spacing=10, scroll=ft.ScrollMode.AUTO)
         gallery_section = ft.Column(
             [
@@ -3722,6 +3727,26 @@ class EntpFletApp:
             gallery.controls = controls
             gallery_section.visible = bool(controls)
 
+        def insert_links(links: list[str]) -> None:
+            content = str(editor.value or "")
+            selection = editor.selection
+            if selection is not None and min(selection.base_offset, selection.extent_offset) >= 0:
+                start = min(selection.base_offset, selection.extent_offset)
+                end = max(selection.base_offset, selection.extent_offset)
+            else:
+                start = end = len(content)
+            before = content[:start]
+            after = content[end:]
+            prefix = "" if not before or before.endswith("\n") else "\n"
+            suffix = "" if not after or after.startswith("\n") else "\n"
+            inserted = prefix + "\n".join(links) + suffix
+            editor.value = before + inserted + after
+            cursor = start + len(inserted)
+            editor.selection = ft.TextSelection(base_offset=cursor, extent_offset=cursor)
+            save_source()
+            render_gallery()
+            self.page.update()
+
         async def insert_images(_) -> None:
             files = await self.file_picker.pick_files(
                 dialog_title="插入 Markdown 图片",
@@ -3738,22 +3763,40 @@ class EntpFletApp:
                     raise OSError("无法读取所选图片的本地路径")
                 image_path, relative = self.markdown.add_image(kind, object_id, selected_path)
                 links.append(f"![{image_path.stem}]({relative})")
+            insert_links(links)
 
-            content = str(editor.value or "")
-            selection = editor.selection
-            if selection is not None and min(selection.base_offset, selection.extent_offset) >= 0:
-                start = min(selection.base_offset, selection.extent_offset)
-                end = max(selection.base_offset, selection.extent_offset)
-            else:
-                start = end = len(content)
-            before = content[:start]
-            after = content[end:]
-            prefix = "" if not before or before.endswith("\n") else "\n"
-            suffix = "" if not after or after.startswith("\n") else "\n"
-            editor.value = before + prefix + "\n".join(links) + suffix + after
-            save_source()
-            render_gallery()
-            self.page.update()
+        async def paste_clipboard_image(_=None, *, quiet: bool = False) -> bool:
+            try:
+                image_bytes = await self.clipboard.get_image()
+                if not image_bytes:
+                    if not quiet:
+                        self.page.show_dialog(
+                            ft.SnackBar(content=ft.Text("剪贴板里没有图片。先复制或截图，再来粘贴。"))
+                        )
+                    return False
+                image_path, relative = self.markdown.add_image_bytes(
+                    kind,
+                    object_id,
+                    image_bytes,
+                    stem=datetime.now().strftime("clipboard-%Y%m%d-%H%M%S"),
+                )
+                insert_links([f"![{image_path.stem}]({relative})"])
+                self.page.show_dialog(ft.SnackBar(content=ft.Text("图片已粘贴并保存到当前文档")))
+                return True
+            except Exception as error:
+                self._write_runtime_error("粘贴 Markdown 图片失败", traceback.format_exc())
+                if not quiet:
+                    self._notify_error(f"图片粘贴失败：{error}")
+                return False
+
+        async def handle_markdown_shortcut(event: ft.KeyboardEvent) -> None:
+            if editor_focused["value"] and event.ctrl and str(event.key).lower() == "v":
+                await paste_clipboard_image(quiet=True)
+                return
+            if previous_keyboard_handler is not None:
+                result = previous_keyboard_handler(event)
+                if inspect.isawaitable(result):
+                    await result
 
         def open_external(_) -> None:
             save_source()
@@ -3768,9 +3811,23 @@ class EntpFletApp:
 
         def close_editor(_) -> None:
             save_source()
+            self.page.on_keyboard_event = previous_keyboard_handler
             self._close_dialog()
 
-        editor.on_blur = save_source
+        def editor_focus(_) -> None:
+            editor_focused["value"] = True
+
+        def editor_blur(_) -> None:
+            editor_focused["value"] = False
+            save_source()
+
+        def dismiss_editor(_) -> None:
+            save_source()
+            self.page.on_keyboard_event = previous_keyboard_handler
+
+        editor.on_focus = editor_focus
+        editor.on_blur = editor_blur
+        self.page.on_keyboard_event = handle_markdown_shortcut
         render_gallery()
         page_width = float(self.page.width or 1200)
         page_height = float(self.page.height or 760)
@@ -3797,12 +3854,17 @@ class EntpFletApp:
                                     style=ft.ButtonStyle(shape=rounded(11)),
                                 ),
                                 ft.TextButton(
+                                    "粘贴图片",
+                                    icon=ft.Icons.CONTENT_PASTE_ROUNDED,
+                                    on_click=paste_clipboard_image,
+                                ),
+                                ft.TextButton(
                                     "外部打开",
                                     icon=ft.Icons.OPEN_IN_NEW_ROUNDED,
                                     on_click=open_external,
                                 ),
                                 ft.Container(expand=True),
-                                ft.Text("离开输入框自动保存", size=12, color=MUTED),
+                                ft.Text("Ctrl+V 可直接粘贴截图 · 自动保存", size=12, color=MUTED),
                             ],
                             spacing=8,
                         ),
@@ -3818,7 +3880,7 @@ class EntpFletApp:
                 content_padding=ft.Padding.symmetric(horizontal=20, vertical=8),
                 inset_padding=24,
                 shape=rounded(20),
-                on_dismiss=save_source,
+                on_dismiss=dismiss_editor,
             )
         )
 
