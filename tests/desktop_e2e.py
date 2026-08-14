@@ -84,9 +84,11 @@ class DesktopE2ERunner:
     def _startup(self) -> str:
         assert self.ui.current_mid == self.ui.db.current_mainline_id()
         assert self.ui.content_switcher.content is not None
+        window_icon = Path(str(self.page.window.icon))
+        assert window_icon.name == "app-icon.ico" and window_icon.is_file()
         total, missing = self.ui.interaction_boundary_audit()
         assert total > 0 and not missing
-        return f"当前主线={self.ui.current_mid}，受保护回调={total}"
+        return f"当前主线={self.ui.current_mid}，窗口图标={window_icon.name}，受保护回调={total}"
 
     def _create_and_switch_mainline(self) -> str:
         self.ui.open_blank_mainline()
@@ -276,6 +278,7 @@ class DesktopE2ERunner:
         tag.value = "产品,好奇心"
         tag.on_submit(SimpleNamespace(control=tag))
         hatch = _find(root, ft.IconButton, tooltip="孵化")
+        assert hatch.icon == ft.Icons.SPA_OUTLINED
         hatch.on_click(SimpleNamespace(control=hatch))
         saved = self.ui.db.get_thought(thought_id)
         assert saved["title"] == "E2E 已审视灵感"
@@ -286,6 +289,7 @@ class DesktopE2ERunner:
         self.ui.open_thought_review(thought_id)
         review = self.ui.content_switcher.content
         unreviewed = _find(review, ft.IconButton, tooltip="未审视")
+        assert unreviewed.icon == ft.Icons.VISIBILITY_OFF_OUTLINED
         unreviewed.on_click(SimpleNamespace(control=unreviewed))
         assert self.ui.db.get_thought(thought_id)["status"] == "未审视"
 

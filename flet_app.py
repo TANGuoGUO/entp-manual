@@ -348,6 +348,11 @@ class EntpFletApp:
 
     def _configure_page(self) -> None:
         self.page.title = f"ENTP 自强手册 {APP_VERSION}"
+        window_icon = RESOURCE_ROOT / "assets" / "app-icon.ico"
+        if window_icon.is_file():
+            # Flet's development client otherwise keeps its own blue/red icon
+            # in the title bar and Windows taskbar.
+            self.page.window.icon = str(window_icon)
         self.page.padding = 0
         self.page.bgcolor = CANVAS
         self.page.enable_screenshots = True
@@ -1645,8 +1650,8 @@ class EntpFletApp:
     @staticmethod
     def _idea_stage_spec(status: str) -> tuple[str, str, object]:
         specs = {
-            "未审视": ("未审视", "#6F7682", ft.Icons.RADIO_BUTTON_UNCHECKED_ROUNDED),
-            "待孵化": ("待孵化", AMBER, ft.Icons.LIGHTBULB_OUTLINE_ROUNDED),
+            "未审视": ("未审视", "#6F7682", ft.Icons.VISIBILITY_OFF_OUTLINED),
+            "待孵化": ("待孵化", AMBER, ft.Icons.SPA_OUTLINED),
             "正在尝试": ("正在尝试", GREEN, ft.Icons.SCIENCE_OUTLINED),
             "已归档": ("已归档", "#8B9099", ft.Icons.ARCHIVE_OUTLINED),
         }
@@ -1662,8 +1667,8 @@ class EntpFletApp:
 
     def _idea_status_actions(self, thought_id: int, current_status: str) -> ft.Row:
         actions = (
-            ("未审视", "未审视", ft.Icons.RADIO_BUTTON_UNCHECKED_ROUNDED, "#6F7682"),
-            ("待孵化", "孵化", ft.Icons.EGG_ALT_OUTLINED, AMBER),
+            ("未审视", "未审视", ft.Icons.VISIBILITY_OFF_OUTLINED, "#6F7682"),
+            ("待孵化", "孵化", ft.Icons.SPA_OUTLINED, AMBER),
             ("正在尝试", "尝试", ft.Icons.SCIENCE_OUTLINED, GREEN),
             ("已归档", "归档", ft.Icons.ARCHIVE_OUTLINED, "#8B9099"),
         )
@@ -2118,8 +2123,8 @@ class EntpFletApp:
                     style=ft.ButtonStyle(shape=rounded(10)),
                 )
                 for target, label, icon, color in (
-                    ("未审视", "未审视", ft.Icons.RADIO_BUTTON_UNCHECKED_ROUNDED, "#6F7682"),
-                    ("待孵化", "孵化", ft.Icons.EGG_ALT_OUTLINED, AMBER),
+                    ("未审视", "未审视", ft.Icons.VISIBILITY_OFF_OUTLINED, "#6F7682"),
+                    ("待孵化", "孵化", ft.Icons.SPA_OUTLINED, AMBER),
                     ("正在尝试", "尝试", ft.Icons.SCIENCE_OUTLINED, GREEN),
                     ("已归档", "归档", ft.Icons.ARCHIVE_OUTLINED, "#8B9099"),
                 )
