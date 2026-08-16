@@ -94,10 +94,10 @@ try {
         --product $productName `
         --company "ENTP Manual" `
         --description $description `
-        --build-version 2.1.4 `
+        --build-version 2.1.5 `
         --python-version 3.13 `
         --template "vendor\flet-build-template" `
-        --exclude .git .github .venv .devtools build release tests vendor outputs logs backups designs installer markdown tmppdauzxck "*.db" "*.spec" `
+        --exclude .git .github .venv .devtools build release tests vendor extensions scripts outputs logs backups designs installer markdown tmppdauzxck __pycache__ "*.pyc" "*.db" "*.spec" `
         --yes --no-rich-output -v
 
     if ($LASTEXITCODE -ne 0) {
@@ -117,7 +117,7 @@ try {
     Push-Location $flutterProject
     try {
         & (Join-Path $flutterRoot "bin\flutter.bat") build windows `
-            --build-name 2.1.4 `
+            --build-name 2.1.5 `
             --no-version-check `
             --suppress-analytics
         if ($LASTEXITCODE -ne 0) {
@@ -128,8 +128,21 @@ try {
         Pop-Location
     }
 
+    # Replace the first-stage bundle instead of merging into it. A merge can
+    # preserve a stale python3xx.dll from an earlier build.
+    if (Test-Path -LiteralPath $outputDir) {
+        Remove-Item -LiteralPath $outputDir -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $outputDir | Out-Null
     Copy-Item -Path (Join-Path $flutterRelease "*") `
         -Destination $outputDir -Recurse -Force
+
+    & (Join-Path $projectRoot ".venv\Scripts\python.exe") `
+        (Join-Path $projectRoot "scripts\verify_windows_bundle.py") `
+        $outputDir --python-version 3.13
+    if ($LASTEXITCODE -ne 0) {
+        throw "Windows bundle runtime verification failed with exit code $LASTEXITCODE"
+    }
 }
 finally {
     Pop-Location

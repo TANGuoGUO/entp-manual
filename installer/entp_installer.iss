@@ -1,5 +1,5 @@
 #define MyAppName "ENTP 自强手册"
-#define MyAppVersion "2.1.4"
+#define MyAppVersion "2.1.5"
 #define MyAppPublisher "ENTP Manual"
 #define MyAppExeName "ENTPManual.exe"
 #define MyTaskName "ENTPManual_Autostart"
@@ -17,7 +17,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 OutputDir=..\release
-OutputBaseFilename=ENTP-Manual-2.1.4-Setup
+OutputBaseFilename=ENTP-Manual-2.1.5-Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -29,6 +29,17 @@ ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
 RestartApplications=no
 UsePreviousTasks=yes
+
+[InstallDelete]
+; Application data lives under the user's Flet storage directory, not {app}.
+; Remove version-sensitive runtime payload before an in-place update so a DLL
+; or .pyc from an older installer can never survive beside the new bundle.
+Type: filesandordirs; Name: "{app}\app"
+Type: filesandordirs; Name: "{app}\data"
+Type: filesandordirs; Name: "{app}\DLLs"
+Type: filesandordirs; Name: "{app}\Lib"
+Type: filesandordirs; Name: "{app}\site-packages"
+Type: files; Name: "{app}\python3??.dll"
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式："; Flags: unchecked

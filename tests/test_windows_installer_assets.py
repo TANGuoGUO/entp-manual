@@ -42,6 +42,24 @@ class WindowsInstallerAssetTests(unittest.TestCase):
         self.assertIn("UsePreviousTasks=yes", script)
         self.assertIn('Parameters: "--updated"; Flags: nowait skipifnotsilent', script)
 
+    def test_in_place_update_removes_version_sensitive_python_payload(self) -> None:
+        script = (ROOT / "installer" / "entp_installer.iss").read_text(encoding="utf-8")
+        self.assertIn("[InstallDelete]", script)
+        self.assertIn('Name: "{app}\\python3??.dll"', script)
+        for directory in ("app", "data", "DLLs", "Lib", "site-packages"):
+            self.assertIn(f'Name: "{{app}}\\{directory}"', script)
+
+    def test_cloud_build_locks_and_verifies_embedded_python(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "windows-build.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('SERIOUS_PYTHON_VERSION: "3.13"', workflow)
+        self.assertIn(
+            "verify_windows_bundle.py build\\windows --python-version 3.13",
+            workflow,
+        )
+        self.assertIn("Remove-Item build\\windows -Recurse -Force", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
