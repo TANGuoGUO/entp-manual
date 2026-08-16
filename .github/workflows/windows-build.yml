@@ -37,16 +37,46 @@ jobs:
       - name: Build native Windows app
         shell: pwsh
         run: |
+          python scripts\generate_windows_icon.py `
+            assets\app-icon.png `
+            assets\app-icon.ico `
+            assets\icon_windows.ico
           flet build windows . --output build\windows `
             --project entp_manual `
             --artifact ENTPManual `
             --product "ENTP 自强手册" `
             --company "ENTP Manual" `
             --description "好奇心动力回流系统" `
-            --build-version 2.1.3 `
+            --build-version 2.1.4 `
             --python-version 3.13 `
-            --exclude .venv build release tests vendor outputs logs backups designs installer markdown "*.db" "*.spec" `
+            --template vendor\flet-build-template `
+            --exclude .git .github .venv .devtools build release tests vendor outputs logs backups designs installer markdown tmppdauzxck "*.db" "*.spec" `
             --yes --no-rich-output
+
+          # Flet's icon generator flattens a multi-frame ICO to a single
+          # 256px resource. Put the full ICO back into the runner, rebuild,
+          # then refresh the artifact that Inno Setup will package.
+          Copy-Item assets\app-icon.ico `
+            build\flutter\windows\runner\resources\app_icon.ico -Force
+          $flutter = Get-ChildItem "$env:USERPROFILE\flutter" `
+            -Recurse -Filter flutter.bat -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $flutter) {
+            $flutter = (Get-Command flutter -ErrorAction Stop).Source
+          }
+          Push-Location build\flutter
+          try {
+            & $flutter build windows --build-name 2.1.4 `
+              --no-version-check --suppress-analytics
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows icon resource rebuild failed with exit code $LASTEXITCODE"
+            }
+          }
+          finally {
+            Pop-Location
+          }
+          Copy-Item build\flutter\build\windows\x64\runner\Release\* `
+            build\windows -Recurse -Force
 
       - name: Locate Inno Setup
         id: inno
@@ -71,16 +101,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
           powershell.exe -NoProfile -ExecutionPolicy Bypass `
             -File installer\create_update_manifest.ps1 `
-            -Version "2.1.3" `
-            -InstallerPath "release\ENTP-Manual-2.1.3-Setup.exe" `
+            -Version "2.1.4" `
+            -InstallerPath "release\ENTP-Manual-2.1.4-Setup.exe" `
             -OutputPath "release\update.json"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ENTP-Manual-2.1.3-Windows
+          name: ENTP-Manual-2.1.4-Windows
           path: |
-            release/ENTP-Manual-2.1.3-Setup.exe
+            release/ENTP-Manual-2.1.4-Setup.exe
             release/update.json
           if-no-files-found: error
 
@@ -96,6 +126,6 @@ jobs:
             gh release create $tag --title $tag --generate-notes
           }
           gh release upload $tag `
-            release\ENTP-Manual-2.1.3-Setup.exe `
+            release\ENTP-Manual-2.1.4-Setup.exe `
             release\update.json `
             --clobber

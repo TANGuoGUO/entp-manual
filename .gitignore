@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+.devtools/
 qa-*.png
 logs/
 designs/*-markdown/

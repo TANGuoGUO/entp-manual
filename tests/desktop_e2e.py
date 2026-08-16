@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import flet as ft
+from flet_quill_editor import FletQuillEditor
 
 from backup_service import export_workspace, inspect_backup
 
@@ -143,12 +144,9 @@ class DesktopE2ERunner:
         assert captured, "点击任务没有打开详情弹窗"
         dialog = captured[-1]
         self.ui._protect_control_tree(dialog)
+        assert dialog.modal is False
         title = _find(dialog, ft.TextField, value="E2E 一次点击新增任务")
-        description = _find(
-            dialog,
-            ft.TextField,
-            hint_text="在这里直接记录……",
-        )
+        description = _find(dialog, FletQuillEditor)
         assert description.visible and description.autofocus
         assert not any(
             getattr(control, "content", None) in {"编辑", "完成编辑", "正在编辑"}
@@ -157,30 +155,16 @@ class DesktopE2ERunner:
         title.value = "E2E 已整理任务"
         description.value = "从界面任务详情直接输入的背景。"
         title.on_change(SimpleNamespace(control=title))
-        description.on_change(SimpleNamespace(control=description))
+        description.on_change(
+            SimpleNamespace(control=description, data=description.value)
+        )
         await asyncio.sleep(0.6)
-        original_get_image = self.ui.clipboard.get_image
-
-        async def clipboard_image():
-            return (Path(__file__).resolve().parents[1] / "assets" / "app-icon.png").read_bytes()
-
-        self.ui.clipboard.get_image = clipboard_image
-        try:
-            await self.page.on_keyboard_event(SimpleNamespace(ctrl=True, key="V"))
-        finally:
-            self.ui.clipboard.get_image = original_get_image
         task = self.ui.db.get_task(task_id)
         assert task["title"] == "E2E 已整理任务"
         assert task["description"] == "从界面任务详情直接输入的背景。"
         assert "从界面任务详情" in self.ui.markdown.read("task", task_id)
-        assert "![clipboard-" in self.ui.markdown.read("task", task_id)
-        assert any(isinstance(control, ft.Image) for control in _walk(dialog))
-        assert any(
-            isinstance(control, ft.Text) and control.value == "图片已自动保存"
-            for control in _walk(dialog)
-        )
         self.ui.close_task_detail()
-        return "任务弹窗打开即可输入；停顿后自动保存，Ctrl+V 截图不暴露 Markdown 语法"
+        return "任务弹窗打开即可输入，停顿后自动保存；点击遮罩可关闭，原生测试覆盖图片粘贴"
 
     def _focus_and_execute_task(self) -> str:
         task_id = int(self.context["task_id"])
@@ -293,16 +277,14 @@ class DesktopE2ERunner:
         assert thought["mainline_id"] is None and thought["status"] == "未审视"
         self.ui.show_view(self.ui.NAV_IDEAS)
         self.ui.open_thought_review(thought_id)
-        root = self.ui.content_switcher.content
+        root = self.page._dialogs.controls[-1]
+        assert root.modal is False
         title = _find(root, ft.TextField, value="E2E 当前页暂存灵感")
-        raw = next(
-            control
-            for control in _walk(root)
-            if isinstance(control, ft.TextField) and bool(control.multiline)
-        )
+        raw = _find(root, FletQuillEditor)
         tag = _find(root, ft.TextField, hint_text="＋ 添加标签")
         title.value = "E2E 已审视灵感"
         raw.value = "自由正文，没有预设问题。"
+        raw.on_change(SimpleNamespace(control=raw, data=raw.value))
         tag.value = "产品,好奇心"
         tag.on_submit(SimpleNamespace(control=tag))
         hatch = _find(root, ft.IconButton, tooltip="孵化")
@@ -315,7 +297,7 @@ class DesktopE2ERunner:
         assert "自由正文" in self.ui.markdown.read("thought", thought_id)
 
         self.ui.open_thought_review(thought_id)
-        review = self.ui.content_switcher.content
+        review = self.page._dialogs.controls[-1]
         unreviewed = _find(review, ft.IconButton, tooltip="未审视")
         assert unreviewed.icon == ft.Icons.VISIBILITY_OFF_OUTLINED
         unreviewed.on_click(SimpleNamespace(control=unreviewed))
@@ -385,57 +367,44 @@ class DesktopE2ERunner:
 
     async def _markdown_roundtrip(self) -> str:
         task_id = int(self.context["task_id"])
-        captured: list[ft.AlertDialog] = []
-        original_show_dialog = self.page.show_dialog
-
-        def capture_dialog(dialog) -> None:
-            captured.append(dialog)
-            original_show_dialog(dialog)
-
-        async def choose_image(**_kwargs):
-            image = Path(__file__).resolve().parents[1] / "assets" / "app-icon.png"
-            return [SimpleNamespace(path=str(image))]
-
-        original_pick_files = self.ui.file_picker.pick_files
-        original_get_image = self.ui.clipboard.get_image
-
-        async def clipboard_image():
-            return (Path(__file__).resolve().parents[1] / "assets" / "app-icon.png").read_bytes()
-
-        self.page.show_dialog = capture_dialog
-        self.ui.file_picker.pick_files = choose_image
-        self.ui.clipboard.get_image = clipboard_image
-        try:
-            self.ui.open_markdown("task", task_id)
-            dialog = captured[-1]
-            self.ui._protect_control_tree(dialog)
-            editor = next(
-                control
-                for control in _walk(dialog)
-                if isinstance(control, ft.TextField) and bool(control.multiline)
-            )
-            images_before = len(
-                self.ui.markdown.image_paths("task", task_id, str(editor.value))
-            )
-            insert_image = _find(dialog, ft.FilledTonalButton, content="插入图片")
-            await insert_image.on_click(SimpleNamespace(control=insert_image))
-            paste_image = _find(dialog, ft.TextButton, content="粘贴图片")
-            await paste_image.on_click(SimpleNamespace(control=paste_image))
-            assert self.ui.markdown.image_paths("task", task_id, str(editor.value))
-            assert (
-                len(self.ui.markdown.image_paths("task", task_id, str(editor.value)))
-                == images_before + 2
-            )
-            editor.value = str(editor.value) + "\nE2E 用户自由 Markdown 正文。\n"
-            editor.on_blur(SimpleNamespace(control=editor))
-        finally:
-            self.page.show_dialog = original_show_dialog
-            self.ui.file_picker.pick_files = original_pick_files
-            self.ui.clipboard.get_image = original_get_image
+        self.ui.open_markdown("task", task_id)
+        dialog = self.page._dialogs.controls[-1]
+        self.ui._protect_control_tree(dialog)
+        assert dialog.modal is False
+        editor = _find(dialog, FletQuillEditor)
+        editor.value = str(editor.value) + "\nE2E 用户自由 Markdown 正文。\n"
+        editor.on_change(SimpleNamespace(control=editor, data=editor.value))
+        editor.on_blur(SimpleNamespace(control=editor))
         assert "E2E 用户自由 Markdown 正文" in self.ui.markdown.read("task", task_id)
         self.ui._sync_markdown()
         assert "E2E 用户自由 Markdown 正文" in self.ui.markdown.read("task", task_id)
-        return "应用内 Markdown 可编辑、选图或粘贴图片并自动保存，系统刷新后内容仍保留"
+        return "应用内富文本 Markdown 可直接编辑并自动保存；原生测试另行验证 Ctrl+V 图片粘贴"
+
+    def _editor_runtime_error_recovery(self) -> str:
+        task_id = int(self.context["task_id"])
+        self.ui.show_view(self.ui.NAV_CURRENT)
+        self.ui.select_task(task_id)
+        dialog = self.page._dialogs.controls[-1]
+        assert self.ui._active_editor_dialog == "task"
+        assert dialog.open
+
+        self.ui._handle_page_error(
+            SimpleNamespace(data="Exception: Invalid image data")
+        )
+
+        assert self.ui._active_editor_dialog is None
+        assert self.ui.selected_task_id is None
+        assert not dialog.open
+        assert self.ui.db.get_task(task_id) is not None
+        self.ui.quick_task_input.value = "E2E 编辑器异常后仍可新增"
+        self.ui.quick_task_input.on_submit(
+            SimpleNamespace(control=self.ui.quick_task_input)
+        )
+        assert any(
+            str(task["title"]) == "E2E 编辑器异常后仍可新增"
+            for task in self.ui.db.list_tasks(self.ui.current_mid)
+        )
+        return "编辑器运行期异常只关闭当前弹窗；主界面、数据库和后续新增任务继续可用"
 
     async def _backup_roundtrip(self) -> str:
         archive = self.report_path.parent / "desktop-e2e.entp.zip"
@@ -596,6 +565,7 @@ class DesktopE2ERunner:
         )
         await self.case("E2E-11", "主线归档与恢复", self._archive_restore_mainline)
         await self.case("E2E-12", "Markdown 编辑与图片插入", self._markdown_roundtrip)
+        await self.case("E2E-19", "Markdown 异常熔断", self._editor_runtime_error_recovery)
         await self.case("E2E-13", "完整导出与导入", self._backup_roundtrip)
         await self.case("E2E-14", "异常隔离与事务回滚", self._isolated_failure)
         await self.case("E2E-15", "今日排序与分组折叠", self._today_sort_and_collapse)

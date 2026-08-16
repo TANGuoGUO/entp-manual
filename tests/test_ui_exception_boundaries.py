@@ -138,6 +138,67 @@ class UiExceptionBoundaryTests(unittest.TestCase):
         self.assertEqual(self.app.today_collapsed, {"已完成": False})
         self.assertEqual(self.app.rail.selected_index, self.app.NAV_CURRENT)
 
+    def test_ER_17_callbacks_stop_after_workspace_is_closed(self) -> None:
+        called: list[str] = []
+        self.app._closed = True
+        self.app._exiting = False
+        guarded = self.app._wrap_event_handler(
+            lambda _event: called.append("unexpected"),
+            "关闭后的回调",
+        )
+
+        guarded(None)
+
+        self.assertEqual(called, [])
+        self.assertEqual(self.errors, [])
+
+    def test_ER_18_closed_database_does_not_cause_secondary_rollback_error(self) -> None:
+        with TemporaryDirectory() as temporary:
+            self.app.db = Database(Path(temporary) / "closed.db")
+            self.app._closed = False
+            self.app._exiting = False
+            self.app._close_database()
+
+            self.app._report_interaction_error(
+                "关闭数据库后的交互",
+                sqlite3.ProgrammingError("Cannot operate on a closed database"),
+                details="original failure",
+            )
+
+        self.assertEqual(self.errors, [("关闭数据库后的交互", "original failure")])
+        self.assertEqual(len(self.messages), 1)
+
+    def test_ER_19_editor_runtime_error_closes_only_editor_and_restores_page(self) -> None:
+        popped: list[bool] = []
+        restored: list[int] = []
+        self.app._closed = False
+        self.app._exiting = False
+        self.app._active_editor_dialog = "task"
+        self.app.selected_task_id = 9
+        self.app.selected_thought_id = None
+        self.app.selected_mainline_id = None
+        self.app.active_index = self.app.NAV_CURRENT
+        self.app.page = SimpleNamespace(pop_dialog=lambda: popped.append(True))
+        self.app.show_view = restored.append
+
+        self.app._handle_page_error(SimpleNamespace(data="Exception: Invalid image data"))
+
+        self.assertEqual(popped, [True])
+        self.assertEqual(restored, [self.app.NAV_CURRENT])
+        self.assertIsNone(self.app._active_editor_dialog)
+        self.assertIsNone(self.app.selected_task_id)
+        self.assertIn("Markdown 编辑器遇到异常", self.messages[-1])
+
+    def test_ER_20_page_update_is_ignored_after_shutdown(self) -> None:
+        updates: list[tuple] = []
+        self.app._closed = True
+        self.app._exiting = True
+        self.app._original_page_update = lambda *controls: updates.append(controls)
+
+        self.app._protected_page_update()
+
+        self.assertEqual(updates, [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

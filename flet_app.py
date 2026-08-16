@@ -210,6 +210,7 @@ class EntpFletApp:
         self.detail_holder = ft.Container()
         self.selected_task_id: int | None = None
         self._task_detail_keyboard_restore = None
+        self._active_editor_dialog: str | None = None
         self.selected_thought_id: int | None = None
         self.selected_mainline_id: int | None = None
         self.idea_archive_open = False
@@ -406,6 +407,9 @@ class EntpFletApp:
             pass
 
     def _notify_error(self, message: str) -> None:
+        if getattr(self, "_closed", False) or getattr(self, "_exiting", False):
+            self._write_runtime_error("窗口已关闭，跳过错误提示", message)
+            return
         try:
             self.page.show_dialog(
                 ft.SnackBar(
@@ -430,6 +434,8 @@ class EntpFletApp:
             self._write_runtime_error("无法显示成功提示", traceback.format_exc())
 
     def _sync_markdown(self, *, show_error: bool = True) -> bool:
+        if getattr(self, "_closed", False):
+            return False
         try:
             self.markdown.sync_all(self.db)
             return True
@@ -444,11 +450,41 @@ class EntpFletApp:
     def _handle_page_error(self, event) -> None:
         details = str(getattr(event, "data", "") or "未知运行期错误")
         self._write_runtime_error("Flet 运行期回调异常", details)
+        if getattr(self, "_closed", False) or getattr(self, "_exiting", False):
+            return
+        if self._recover_active_editor():
+            self._notify_error(
+                "Markdown 编辑器遇到异常，已自动关闭；主界面和已保存内容不受影响。"
+            )
+            return
         if "database is locked" in details.lower():
             message = "数据库暂时被其他程序占用，本次操作没有完成。请稍后再试。"
         else:
             message = "这次操作没有完成，错误已经记录；当前窗口可以继续使用。"
         self._notify_error(message)
+
+    def _recover_active_editor(self) -> bool:
+        """Remove a failed rich editor without sacrificing the application shell."""
+        if not getattr(self, "_active_editor_dialog", None):
+            return False
+        self._active_editor_dialog = None
+        self.selected_task_id = None
+        self.selected_thought_id = None
+        self.selected_mainline_id = None
+        try:
+            self.page.pop_dialog()
+        except Exception:
+            self._write_runtime_error("关闭异常 Markdown 弹窗失败", traceback.format_exc())
+        try:
+            self.show_view(self.active_index)
+        except Exception:
+            self._write_runtime_error("恢复 Markdown 弹窗下层页面失败", traceback.format_exc())
+        return True
+
+    def _handle_editor_render_error(self, context: str, event) -> None:
+        details = str(getattr(event, "data", "") or "未知图片渲染错误")
+        self._write_runtime_error(f"{context} Markdown 图片无法显示", details)
+        self._notify_error("有一张图片无法显示，已用占位块替代；其他内容可以继续编辑。")
 
     @staticmethod
     def _control_label(control: ft.Control, event_name: str) -> str:
@@ -484,7 +520,11 @@ class EntpFletApp:
     ) -> None:
         original_details = details or traceback.format_exc()
         try:
-            if hasattr(self, "db") and self.db.conn.in_transaction:
+            if (
+                not getattr(self, "_closed", False)
+                and hasattr(self, "db")
+                and self.db.conn.in_transaction
+            ):
                 self.db.conn.rollback()
         except Exception:
             self._write_runtime_error(
@@ -549,6 +589,8 @@ class EntpFletApp:
             return handler
         if inspect.iscoroutinefunction(handler):
             async def guarded_async(*args, **kwargs):
+                if getattr(self, "_closed", False) or getattr(self, "_exiting", False):
+                    return None
                 snapshot = self._interaction_state_snapshot()
                 try:
                     return await handler(*args, **kwargs)
@@ -563,6 +605,8 @@ class EntpFletApp:
             return guarded_async
 
         def guarded_sync(*args, **kwargs):
+            if getattr(self, "_closed", False) or getattr(self, "_exiting", False):
+                return None
             snapshot = self._interaction_state_snapshot()
             try:
                 return handler(*args, **kwargs)
@@ -609,6 +653,8 @@ class EntpFletApp:
                     pending.extend(item for item in value if isinstance(item, ft.Control))
 
     def _protected_page_update(self, *controls: ft.Control) -> None:
+        if getattr(self, "_closed", False) or getattr(self, "_exiting", False):
+            return
         roots = list(controls)
         if not roots:
             roots.extend(getattr(self.page, "controls", []))
@@ -1106,9 +1152,7 @@ class EntpFletApp:
             self.refresh_vault(update=False)
             view = self._vault_view()
         elif index == self.NAV_IDEAS:
-            if self.selected_thought_id is not None:
-                view = self._idea_review_view(self.selected_thought_id)
-            elif self.idea_archive_open:
+            if self.idea_archive_open:
                 view = self._ideas_archive_view()
             else:
                 self.idea_board_control = self._ideas_board_view()
@@ -1449,6 +1493,7 @@ class EntpFletApp:
             text_size=16,
             expand=True,
             autofocus=True,
+            paste_on_mount=os.environ.get("ENTP_QA_PASTE_ON_MOUNT") == "1",
         )
         save_status = ft.Text("已自动保存", size=12, color=MUTED)
 
@@ -1458,6 +1503,8 @@ class EntpFletApp:
         }
 
         def save_fields(_=None) -> None:
+            if self._closed or self._exiting:
+                return
             title = str(title_field.value or "").strip() or str(task["title"])
             description = str(state["description"])
             if title == last_saved["title"] and description == last_saved["description"]:
@@ -1505,10 +1552,19 @@ class EntpFletApp:
         def description_blur(_) -> None:
             save_fields(None)
 
+        def description_paste_error(event) -> None:
+            details = str(getattr(event, "data", "") or "未知的剪贴板错误")
+            self._write_runtime_error("任务详情粘贴图片失败", details)
+            self._notify_error("图片粘贴失败，请重新复制图片后再试。")
+
         title_field.on_blur = save_fields
         title_field.on_change = schedule_autosave
         description_editor.on_blur = description_blur
         description_editor.on_change = schedule_autosave
+        description_editor.on_paste_error = description_paste_error
+        description_editor.on_render_error = lambda event: self._handle_editor_render_error(
+            "任务详情", event
+        )
 
         header = ft.Container(
             content=ft.Row(
@@ -1584,7 +1640,7 @@ class EntpFletApp:
             height=580,
         )
         return ft.AlertDialog(
-            modal=True,
+            modal=False,
             content=content,
             content_padding=0,
             inset_padding=24,
@@ -2020,8 +2076,255 @@ class EntpFletApp:
         if not self.db.get_thought(thought_id):
             return
         self.selected_thought_id = thought_id
-        self.content_switcher.content = self._idea_review_view(thought_id)
+        self._active_editor_dialog = "thought"
+        self.page.show_dialog(self._idea_review_dialog(thought_id))
         self.page.update()
+
+    def _idea_review_dialog(self, thought_id: int) -> ft.AlertDialog:
+        thought = self.db.get_thought(thought_id)
+        if not thought:
+            return ft.AlertDialog(content=ft.Text("这条灵感已经不存在。"), modal=False)
+
+        initial_body = self.markdown.editor_body_with_legacy_images(
+            "thought", thought_id, str(thought["raw_content"] or "")
+        )
+        state = {
+            "body": initial_body,
+            "status": str(thought["status"] or "未审视"),
+            "revision": 0,
+        }
+        title_field = ft.TextField(
+            value=str(thought["title"] or ""),
+            hint_text="灵感标题",
+            border=ft.InputBorder.NONE,
+            text_size=24,
+            text_style=ft.TextStyle(weight=ft.FontWeight.W_700, color=INK),
+            content_padding=0,
+        )
+        tags = [
+            tag.strip()
+            for tag in str(thought["tags"] or "").replace("，", ",").split(",")
+            if tag.strip()
+        ]
+        tag_input = ft.TextField(
+            hint_text="＋ 添加标签",
+            border=ft.InputBorder.NONE,
+            text_size=13,
+            width=130,
+            height=38,
+            content_padding=ft.Padding.symmetric(horizontal=7, vertical=8),
+        )
+        tag_holder = ft.Row(spacing=6, wrap=True)
+        document_path = self.markdown.path_for("thought", thought_id)
+        image_directory, image_link_prefix = self.markdown.editor_image_context(
+            "thought", thought_id
+        )
+        editor = FletQuillEditor(
+            value=initial_body,
+            placeholder="直接写下你的想法，也可以粘贴图片……",
+            document_directory=str(document_path.parent.resolve()),
+            image_directory=str(image_directory.resolve()),
+            image_link_prefix=image_link_prefix,
+            text_size=16,
+            expand=True,
+            autofocus=True,
+        )
+        save_status = ft.Text("已自动保存", size=12, color=MUTED)
+        last_saved = {
+            "title": str(thought["title"] or ""),
+            "body": initial_body,
+            "status": state["status"],
+            "tags": ",".join(tags),
+        }
+
+        def save_all(_=None) -> None:
+            if self._closed or self._exiting:
+                return
+            title = str(title_field.value or "").strip() or "未命名灵感"
+            body = str(state["body"])
+            tags_value = ",".join(tags)
+            if (
+                title == last_saved["title"]
+                and body == last_saved["body"]
+                and state["status"] == last_saved["status"]
+                and tags_value == last_saved["tags"]
+            ):
+                save_status.value = "已自动保存"
+                return
+            self.db.update_thought(
+                thought_id,
+                title=title,
+                raw_content=body,
+                conclusion=str(thought["conclusion"] or ""),
+                evidence=str(thought["evidence"] or ""),
+                next_step=str(thought["next_step"] or ""),
+                status=str(state["status"]),
+                progress=int(thought["progress"] or 0),
+                mainline_id=thought["mainline_id"],
+                category=str(thought["category"] or "未分类"),
+                interest_level=str(thought["interest_level"] or "有点好奇"),
+                tags=tags_value,
+            )
+            self._sync_markdown()
+            last_saved.update(
+                title=title,
+                body=body,
+                status=str(state["status"]),
+                tags=tags_value,
+            )
+            save_status.value = "已自动保存"
+
+        async def delayed_autosave(revision: int) -> None:
+            await asyncio.sleep(0.45)
+            if revision != state["revision"]:
+                return
+            save_all()
+            self.page.update()
+
+        def schedule_autosave(event=None) -> None:
+            if isinstance(getattr(event, "control", None), FletQuillEditor):
+                state["body"] = str(getattr(event, "data", "") or "")
+            state["revision"] += 1
+            save_status.value = "正在自动保存…"
+            self.page.update()
+            self.page.run_task(delayed_autosave, int(state["revision"]))
+
+        def refresh_underlay() -> None:
+            if self.active_index != self.NAV_IDEAS:
+                return
+            if self.idea_archive_open:
+                self.content_switcher.content = self._ideas_archive_view()
+            else:
+                self.idea_board_control = self._ideas_board_view()
+                self.content_switcher.content = self.idea_board_control
+
+        def finish(*, close: bool) -> None:
+            save_all()
+            self._active_editor_dialog = None
+            self.selected_thought_id = None
+            refresh_underlay()
+            if close:
+                self._close_dialog()
+            else:
+                self.page.update()
+
+        def change_status(target: str) -> None:
+            state["status"] = target
+            finish(close=True)
+
+        def remove_tag(tag: str) -> None:
+            if tag in tags:
+                tags.remove(tag)
+            render_tags()
+            schedule_autosave()
+
+        def render_tags() -> None:
+            tag_holder.controls = [
+                ft.Chip(
+                    label=ft.Text(tag, size=12, color=BLUE_DARK),
+                    bgcolor=BLUE_SOFT,
+                    shape=rounded(99),
+                    delete_icon=ft.Icon(ft.Icons.CLOSE_ROUNDED, size=14),
+                    on_delete=lambda _, value=tag: remove_tag(value),
+                    padding=2,
+                )
+                for tag in tags
+            ] + [tag_input]
+
+        def add_tag(_=None) -> None:
+            for value in (
+                item.strip()
+                for item in str(tag_input.value or "").replace("，", ",").split(",")
+            ):
+                if value and value not in tags:
+                    tags.append(value)
+            tag_input.value = ""
+            render_tags()
+            schedule_autosave()
+
+        def paste_error(event) -> None:
+            details = str(getattr(event, "data", "") or "未知的剪贴板错误")
+            self._write_runtime_error("灵感编辑器粘贴图片失败", details)
+            self._notify_error("图片粘贴失败，请重新复制图片后再试。")
+
+        title_field.on_change = schedule_autosave
+        title_field.on_blur = save_all
+        tag_input.on_submit = add_tag
+        editor.on_change = schedule_autosave
+        editor.on_blur = save_all
+        editor.on_paste_error = paste_error
+        editor.on_render_error = lambda event: self._handle_editor_render_error(
+            "候审灵感", event
+        )
+        render_tags()
+
+        status_actions = ft.Row(
+            [
+                ft.IconButton(
+                    icon,
+                    tooltip=label,
+                    icon_size=20,
+                    icon_color=ft.Colors.WHITE if state["status"] == target else color,
+                    bgcolor=color if state["status"] == target else ft.Colors.TRANSPARENT,
+                    disabled=state["status"] == target,
+                    on_click=lambda _, value=target: change_status(value),
+                    style=ft.ButtonStyle(shape=rounded(10)),
+                )
+                for target, label, icon, color in (
+                    ("未审视", "未审视", ft.Icons.VISIBILITY_OFF_OUTLINED, "#6F7682"),
+                    ("待孵化", "孵化", ft.Icons.SPA_OUTLINED, AMBER),
+                    ("正在尝试", "尝试", ft.Icons.SCIENCE_OUTLINED, GREEN),
+                    ("已归档", "归档", ft.Icons.ARCHIVE_OUTLINED, "#8B9099"),
+                )
+            ],
+            spacing=3,
+            tight=True,
+        )
+        content = ft.Column(
+            [
+                ft.Row(
+                    [
+                        ft.Container(title_field, expand=True),
+                        status_actions,
+                        ft.IconButton(
+                            ft.Icons.CLOSE_ROUNDED,
+                            tooltip="关闭",
+                            icon_color=MUTED,
+                            on_click=lambda _: finish(close=True),
+                        ),
+                    ],
+                    spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                ),
+                ft.Row(
+                    [
+                        ft.Text(f"记录于 {str(thought['created_at'])[:16]}", size=13, color=MUTED),
+                        ft.Container(expand=True),
+                        save_status,
+                    ]
+                ),
+                tag_holder,
+                ft.Divider(height=1, color=LINE),
+                editor,
+                ft.Text("可直接粘贴文字或图片，修改会自动保存", size=12, color=MUTED),
+            ],
+            spacing=10,
+            width=max(560, min(860, float(self.page.width or 1200) - 80)),
+            height=max(460, min(650, float(self.page.height or 760) - 110)),
+        )
+        return ft.AlertDialog(
+            modal=False,
+            content=content,
+            content_padding=24,
+            inset_padding=24,
+            bgcolor=SURFACE,
+            shape=rounded(20),
+            elevation=18,
+            shadow_color="#33000000",
+            barrier_color="#2E111827",
+            alignment=ft.Alignment(0.15, 0),
+            on_dismiss=lambda _: finish(close=False),
+        )
 
     def close_thought_review(self) -> None:
         self.selected_thought_id = None
@@ -2551,6 +2854,10 @@ class EntpFletApp:
             content=ft.Container(
                 content=ft.Column(summary_controls, spacing=13),
                 padding=22,
+                ink=True,
+                on_click=lambda _, mainline_id=mid: self.open_mainline_editor(
+                    mainline_id
+                ),
             ),
             elevation=0,
             bgcolor="#FAFAFB" if archived else SURFACE,
@@ -2711,8 +3018,200 @@ class EntpFletApp:
         if mainline is None:
             return
         self.selected_mainline_id = mainline_id
-        self.content_switcher.content = self._mainline_editor_view(mainline, autofocus=autofocus)
+        self._active_editor_dialog = "mainline"
+        self.page.show_dialog(
+            self._mainline_editor_dialog(mainline, autofocus=autofocus)
+        )
         self.page.update()
+
+    def _mainline_editor_dialog(self, mainline, *, autofocus: bool = False) -> ft.AlertDialog:
+        mainline_id = int(mainline["id"])
+        initial_body = self.markdown.editor_body_with_legacy_images(
+            "mainline", mainline_id, str(mainline["vision"] or "")
+        )
+        state = {"body": initial_body, "revision": 0}
+        title_field = ft.TextField(
+            value=str(mainline["name"] or ""),
+            hint_text="主线标题",
+            border=ft.InputBorder.NONE,
+            text_size=25,
+            text_style=ft.TextStyle(weight=ft.FontWeight.W_700, color=INK),
+            content_padding=0,
+            autofocus=autofocus,
+        )
+        document_path = self.markdown.path_for("mainline", mainline_id)
+        image_directory, image_link_prefix = self.markdown.editor_image_context(
+            "mainline", mainline_id
+        )
+        editor = FletQuillEditor(
+            value=initial_body,
+            placeholder="在这里记录这条主线的目标、思路和实际收获……",
+            document_directory=str(document_path.parent.resolve()),
+            image_directory=str(image_directory.resolve()),
+            image_link_prefix=image_link_prefix,
+            text_size=16,
+            expand=True,
+            autofocus=not autofocus,
+        )
+        save_status = ft.Text("已自动保存", size=12, color=MUTED)
+        last_saved = {
+            "title": str(mainline["name"] or ""),
+            "body": initial_body,
+        }
+
+        def save(_=None) -> None:
+            if self._closed or self._exiting:
+                return
+            title = str(title_field.value or "").strip() or "未命名主线"
+            body = str(state["body"])
+            if title == last_saved["title"] and body == last_saved["body"]:
+                save_status.value = "已自动保存"
+                return
+            self.db.update_mainline(mainline_id, name=title, vision=body)
+            self._sync_markdown()
+            last_saved.update(title=title, body=body)
+            save_status.value = "已自动保存"
+
+        async def delayed_autosave(revision: int) -> None:
+            await asyncio.sleep(0.45)
+            if revision != state["revision"]:
+                return
+            save()
+            self.page.update()
+
+        def schedule_autosave(event=None) -> None:
+            if isinstance(getattr(event, "control", None), FletQuillEditor):
+                state["body"] = str(getattr(event, "data", "") or "")
+            state["revision"] += 1
+            save_status.value = "正在自动保存…"
+            self.page.update()
+            self.page.run_task(delayed_autosave, int(state["revision"]))
+
+        def refresh_underlay() -> None:
+            if self.active_index == self.NAV_VAULT:
+                self.refresh_vault(update=False)
+                self.content_switcher.content = self._vault_view()
+
+        def finish(*, close: bool) -> None:
+            save()
+            self._active_editor_dialog = None
+            self.selected_mainline_id = None
+            refresh_underlay()
+            if close:
+                self._close_dialog()
+            else:
+                self.page.update()
+
+        def activate(_) -> None:
+            save()
+            self._active_editor_dialog = None
+            self.selected_mainline_id = None
+            self._close_dialog()
+            self.activate_mainline(mainline_id)
+
+        def archive(_) -> None:
+            save()
+            self._active_editor_dialog = None
+            self.selected_mainline_id = None
+            self._close_dialog()
+            self.archive_mainline(mainline_id)
+
+        def restore(_) -> None:
+            save()
+            self._active_editor_dialog = None
+            self.selected_mainline_id = None
+            self._close_dialog()
+            self.restore_mainline(mainline_id)
+
+        def paste_error(event) -> None:
+            details = str(getattr(event, "data", "") or "未知的剪贴板错误")
+            self._write_runtime_error("主线编辑器粘贴图片失败", details)
+            self._notify_error("图片粘贴失败，请重新复制图片后再试。")
+
+        title_field.on_change = schedule_autosave
+        title_field.on_blur = save
+        editor.on_change = schedule_autosave
+        editor.on_blur = save
+        editor.on_paste_error = paste_error
+        editor.on_render_error = lambda event: self._handle_editor_render_error(
+            "主线记录", event
+        )
+
+        is_current = mainline_id == self.db.current_mainline_id()
+        is_archived = str(mainline["status"]) == "已归档"
+        active_count = sum(
+            1 for item in self.db.list_mainlines() if str(item["status"]) != "已归档"
+        )
+        can_archive = not is_current or active_count > 1
+        actions: list[ft.Control] = []
+        if is_archived:
+            actions.append(
+                ft.TextButton("恢复主线", icon=ft.Icons.UNARCHIVE_OUTLINED, on_click=restore)
+            )
+        else:
+            actions.extend(
+                [
+                    ft.TextButton(
+                        "当前主线" if is_current else "设为当前主线",
+                        icon=ft.Icons.FLAG_ROUNDED if is_current else ft.Icons.FLAG_OUTLINED,
+                        disabled=is_current,
+                        on_click=activate,
+                    ),
+                    ft.TextButton(
+                        "归档主线",
+                        icon=ft.Icons.ARCHIVE_OUTLINED,
+                        disabled=not can_archive,
+                        tooltip="至少需要保留一条未归档主线" if not can_archive else None,
+                        on_click=archive,
+                        style=ft.ButtonStyle(color=MUTED),
+                    ),
+                ]
+            )
+
+        content = ft.Column(
+            [
+                ft.Row(
+                    [
+                        ft.Container(title_field, expand=True),
+                        *actions,
+                        ft.IconButton(
+                            ft.Icons.CLOSE_ROUNDED,
+                            tooltip="关闭",
+                            icon_color=MUTED,
+                            on_click=lambda _: finish(close=True),
+                        ),
+                    ],
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
+                ),
+                ft.Row(
+                    [
+                        ft.Text(f"创建于 {str(mainline['created_at'])[:16]}", size=13, color=MUTED),
+                        ft.Container(expand=True),
+                        save_status,
+                    ]
+                ),
+                ft.Divider(height=1, color=LINE),
+                editor,
+                ft.Text("可直接粘贴文字或图片，修改会自动保存", size=12, color=MUTED),
+            ],
+            spacing=10,
+            width=max(560, min(900, float(self.page.width or 1200) - 80)),
+            height=max(460, min(650, float(self.page.height or 760) - 110)),
+        )
+        return ft.AlertDialog(
+            modal=False,
+            content=content,
+            content_padding=24,
+            inset_padding=24,
+            bgcolor=SURFACE,
+            shape=rounded(20),
+            elevation=18,
+            shadow_color="#33000000",
+            barrier_color="#2E111827",
+            alignment=ft.Alignment(0.15, 0),
+            on_dismiss=lambda _: finish(close=False),
+        )
 
     def close_mainline_editor(self) -> None:
         self.selected_mainline_id = None
@@ -3229,6 +3728,12 @@ class EntpFletApp:
             height=58,
             padding=ft.Padding.symmetric(horizontal=8, vertical=4),
             border=ft.Border.only(bottom=ft.BorderSide(1, LINE)),
+            ink=task_id is not None,
+            on_click=(
+                (lambda _, tid=task_id: self.select_task(tid))
+                if task_id is not None
+                else None
+            ),
         )
 
     def quick_add_today_task(self, event) -> None:
@@ -3659,10 +4164,13 @@ class EntpFletApp:
             return
 
     def select_task(self, task_id: int) -> None:
+        if self._closed or self._exiting:
+            return
         task = self.db.get_task(task_id)
         if not task:
             return
         self.selected_task_id = task_id
+        self._active_editor_dialog = "task"
         self.task_holder.controls = self._task_section(self.db.list_tasks(self.current_mid))
         self.page.show_dialog(self._task_detail_dialog(task))
         self.page.update()
@@ -3672,6 +4180,9 @@ class EntpFletApp:
             self._task_detail_keyboard_restore()
             self._task_detail_keyboard_restore = None
         self.selected_task_id = None
+        self._active_editor_dialog = None
+        if self._closed or self._exiting:
+            return
         self.focus_holder.visible = True
         self.task_holder.controls = self._task_section(self.db.list_tasks(self.current_mid))
         self.detail_holder.content = self.calendar_holder
@@ -3713,6 +4224,18 @@ class EntpFletApp:
         self.page.update()
 
     def open_markdown(self, kind: str, object_id: int) -> None:
+        # Product records open in the same rich Markdown detail editor.  The
+        # generated .md file remains the durable storage/export format, but the
+        # user no longer has to edit its system metadata as plain text.
+        if kind == "task":
+            self.select_task(object_id)
+            return
+        if kind == "thought":
+            self.open_thought_review(object_id)
+            return
+        if kind == "mainline":
+            self.open_mainline_editor(object_id)
+            return
         if not self._sync_markdown():
             return
         path = self.markdown.path_for(kind, object_id)
@@ -3864,6 +4387,7 @@ class EntpFletApp:
 
         def close_editor(_) -> None:
             save_source()
+            self._active_editor_dialog = None
             self.page.on_keyboard_event = previous_keyboard_handler
             self._close_dialog()
 
@@ -3876,6 +4400,7 @@ class EntpFletApp:
 
         def dismiss_editor(_) -> None:
             save_source()
+            self._active_editor_dialog = None
             self.page.on_keyboard_event = previous_keyboard_handler
 
         editor.on_focus = editor_focus
@@ -3886,9 +4411,10 @@ class EntpFletApp:
         page_height = float(self.page.height or 760)
         dialog_width = max(560, min(920, page_width - 64))
         dialog_height = max(420, min(600, page_height - 160))
+        self._active_editor_dialog = "raw-markdown"
         self.page.show_dialog(
             ft.AlertDialog(
-                modal=True,
+                modal=False,
                 title=ft.Row(
                     [
                         ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, size=22, color=BLUE),
@@ -4287,7 +4813,11 @@ class EntpFletApp:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ENTP 自强手册 Flet 2.0")
-    parser.add_argument("--db", type=Path, default=DEFAULT_DB)
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path(os.environ.get("ENTP_QA_DB", str(DEFAULT_DB))),
+    )
     parser.add_argument(
         "--view",
         choices=("current", "vault", "ideas", "today", "calendar"),
@@ -4296,7 +4826,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qa-day", type=date.fromisoformat)
     parser.add_argument("--qa-screenshot", type=Path)
     parser.add_argument("--qa-compact", action="store_true")
-    parser.add_argument("--qa-task-detail", action="store_true")
+    parser.add_argument(
+        "--qa-task-detail",
+        action="store_true",
+        default=os.environ.get("ENTP_QA_TASK_DETAIL") == "1",
+    )
     parser.add_argument("--qa-markdown")
     parser.add_argument("--qa-quick-add", action="store_true")
     parser.add_argument("--qa-input-focus", action="store_true")

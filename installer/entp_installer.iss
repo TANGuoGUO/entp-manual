@@ -1,5 +1,5 @@
 #define MyAppName "ENTP 自强手册"
-#define MyAppVersion "2.1.3"
+#define MyAppVersion "2.1.4"
 #define MyAppPublisher "ENTP Manual"
 #define MyAppExeName "ENTPManual.exe"
 #define MyTaskName "ENTPManual_Autostart"
@@ -17,7 +17,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 OutputDir=..\release
-OutputBaseFilename=ENTP-Manual-2.1.3-Setup
+OutputBaseFilename=ENTP-Manual-2.1.4-Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -36,11 +36,12 @@ Name: "autostart"; Description: "登录 Windows 后在后台启动（隐藏任�
 
 [Files]
 Source: "{#AppBundleDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\assets\app-icon.ico"; DestDir: "{app}"; DestName: "ENTPManual.ico"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\ENTPManual.ico"; IconIndex: 0
 Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"; Comment: "卸载程序（默认保留个人数据）"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\ENTPManual.ico"; IconIndex: 0; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent

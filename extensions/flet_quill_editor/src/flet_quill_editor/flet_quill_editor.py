@@ -19,7 +19,10 @@ class FletQuillEditor(ft.LayoutControl):
     image_link_prefix: str = ""
     autofocus: bool = False
     read_only: bool = False
+    paste_on_mount: bool = False
     text_size: float = 16
     on_change: Optional[ControlEventHandler["FletQuillEditor"]] = None
     on_focus: Optional[ControlEventHandler["FletQuillEditor"]] = None
     on_blur: Optional[ControlEventHandler["FletQuillEditor"]] = None
+    on_paste_error: Optional[ControlEventHandler["FletQuillEditor"]] = None
+    on_render_error: Optional[ControlEventHandler["FletQuillEditor"]] = None

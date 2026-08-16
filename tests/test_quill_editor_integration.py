@@ -11,18 +11,24 @@ from markdown_store import MarkdownStore
 
 class QuillEditorIntegrationTests(unittest.TestCase):
     def test_editor_exposes_direct_autosave_events(self) -> None:
+        paste_errors: list[str] = []
+        render_errors: list[str] = []
         editor = FletQuillEditor(
             value="正文",
             placeholder="在这里直接记录……",
             autofocus=True,
             on_change=lambda _event: None,
             on_blur=lambda _event: None,
+            on_paste_error=lambda event: paste_errors.append(event.data),
+            on_render_error=lambda event: render_errors.append(event.data),
         )
 
         self.assertEqual(editor.value, "正文")
         self.assertTrue(editor.autofocus)
         self.assertIsNotNone(editor.on_change)
         self.assertIsNotNone(editor.on_blur)
+        self.assertIsNotNone(editor.on_paste_error)
+        self.assertIsNotNone(editor.on_render_error)
 
     def test_editor_image_context_is_durable_and_relative(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

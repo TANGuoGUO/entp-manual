@@ -15,6 +15,7 @@ dependencies:
   flutter_quill_extensions: 11.0.0
   markdown: ^7.2.1
   markdown_quill: 4.3.0
+  pasteboard: 0.5.0
   path: ^1.9.0
 
 dev_dependencies:

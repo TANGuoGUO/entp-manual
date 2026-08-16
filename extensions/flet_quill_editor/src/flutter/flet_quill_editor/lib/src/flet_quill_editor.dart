@@ -5,21 +5,51 @@ import 'dart:io' as io;
 
 import 'package:flet/flet.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import 'package:flutter_quill_extensions/flutter_quill_extensions.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:markdown_quill/markdown_quill.dart';
+import 'package:pasteboard/pasteboard.dart';
 import 'package:path/path.dart' as path;
+
+@visibleForTesting
+bool isImagePasteShortcut(
+  KeyEvent event, {
+  bool? controlPressed,
+  bool? metaPressed,
+}) {
+  final modifierPressed =
+      (controlPressed ?? HardwareKeyboard.instance.isControlPressed) ||
+      (metaPressed ?? HardwareKeyboard.instance.isMetaPressed);
+  return event is KeyDownEvent &&
+      event.logicalKey == LogicalKeyboardKey.keyV &&
+      modifierPressed;
+}
+
+@visibleForTesting
+QuillEditorImageEmbedConfig safeImageEmbedConfig({
+  required ImageProvider? Function(BuildContext, String) imageProviderBuilder,
+  required Widget Function(BuildContext, Object, StackTrace?)
+  imageErrorWidgetBuilder,
+}) {
+  return QuillEditorImageEmbedConfig(
+    imageProviderBuilder: imageProviderBuilder,
+    imageErrorWidgetBuilder: imageErrorWidgetBuilder,
+    // Suppress flutter_quill_extensions' ImageOptionsMenu. Opening that route
+    // on the first click races Quill's selection gesture on the second click.
+    onImageClicked: (_) {},
+  );
+}
 
 class FletQuillEditorControl extends StatefulWidget {
   final Control control;
 
   FletQuillEditorControl({Key? key, required this.control})
-      : super(key: key ?? ValueKey('control_${control.id}'));
+    : super(key: key ?? ValueKey('control_${control.id}'));
 
   @override
-  State<FletQuillEditorControl> createState() =>
-      _FletQuillEditorControlState();
+  State<FletQuillEditorControl> createState() => _FletQuillEditorControlState();
 }
 
 class _FletQuillEditorControlState extends State<FletQuillEditorControl> {
@@ -36,6 +66,7 @@ class _FletQuillEditorControlState extends State<FletQuillEditorControl> {
   Timer? _changeTimer;
   String _value = '';
   bool _applyingRemoteValue = false;
+  bool _imageRenderErrorReported = false;
 
   @override
   void initState() {
@@ -49,6 +80,7 @@ class _FletQuillEditorControlState extends State<FletQuillEditorControl> {
       config: QuillControllerConfig(
         clipboardConfig: QuillClipboardConfig(
           enableExternalRichPaste: true,
+          onClipboardPaste: _pasteImageFromSystemClipboard,
           onImagePaste: _storePastedImage,
         ),
       ),
@@ -60,6 +92,11 @@ class _FletQuillEditorControlState extends State<FletQuillEditorControl> {
     if (widget.control.getBool('autofocus', false)!) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _focusNode.requestFocus();
+      });
+    }
+    if (widget.control.getBool('paste_on_mount', false)!) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_pasteImageFromSystemClipboard());
       });
     }
   }
@@ -105,8 +142,7 @@ class _FletQuillEditorControlState extends State<FletQuillEditorControl> {
 
     final directory = io.Directory(imageDirectory);
     await directory.create(recursive: true);
-    final filename =
-        'clipboard-${DateTime.now().microsecondsSinceEpoch}.png';
+    final filename = 'clipboard-${DateTime.now().microsecondsSinceEpoch}.png';
     final destination = io.File(path.join(directory.path, filename));
     await destination.writeAsBytes(imageBytes, flush: true);
 
@@ -116,6 +152,66 @@ class _FletQuillEditorControlState extends State<FletQuillEditorControl> {
         : path.posix.join(prefix.replaceAll('\\', '/'), filename);
   }
 
+  Future<bool> _pasteImageFromSystemClipboard() async {
+    try {
+      // flutter_quill's Windows native bridge currently supports HTML but
+      // not bitmap clipboard reads. pasteboard supplies the missing Windows
+      // implementation while Quill still owns the keyboard shortcut and
+      // selection behavior.
+      final imageBytes = await Pasteboard.image;
+      if (imageBytes == null || imageBytes.isEmpty) return false;
+
+      final imageUrl = await _storePastedImage(imageBytes);
+      if (imageUrl == null) {
+        _reportPasteError('No image storage directory is configured.');
+        return true;
+      }
+
+      final selection = _controller.selection;
+      final offset = selection.isValid
+          ? selection.start
+          : _controller.document.length - 1;
+      final replacedLength = selection.isValid && !selection.isCollapsed
+          ? selection.end - selection.start
+          : 0;
+      _controller.replaceText(
+        offset,
+        replacedLength,
+        BlockEmbed.image(imageUrl),
+        TextSelection.collapsed(offset: offset + 1),
+      );
+      return true;
+    } catch (error, stackTrace) {
+      debugPrint('Failed to paste clipboard image: $error\n$stackTrace');
+      _reportPasteError(error.toString());
+      return true;
+    }
+  }
+
+  KeyEventResult? _handleEditorKeyEvent(KeyEvent event, Node? node) {
+    if (!isImagePasteShortcut(event)) {
+      return null;
+    }
+
+    unawaited(_pasteImageOrDelegateToQuill());
+    return KeyEventResult.handled;
+  }
+
+  Future<void> _pasteImageOrDelegateToQuill() async {
+    final imageHandled = await _pasteImageFromSystemClipboard();
+    if (!imageHandled) {
+      // Preserve Quill's normal text, HTML and Markdown paste behavior when
+      // the clipboard does not contain a bitmap.
+      await _controller.clipboardPaste();
+    }
+  }
+
+  void _reportPasteError(String message) {
+    if (widget.control.hasEventHandler('paste_error')) {
+      widget.control.triggerEvent('paste_error', message);
+    }
+  }
+
   ImageProvider? _localImageProvider(BuildContext context, String imageUrl) {
     if (imageUrl.startsWith('http://') ||
         imageUrl.startsWith('https://') ||
@@ -123,14 +219,52 @@ class _FletQuillEditorControlState extends State<FletQuillEditorControl> {
         imageUrl.startsWith('assets/')) {
       return null;
     }
-    final documentDirectory =
-        widget.control.getString('document_directory', '')!;
+    final documentDirectory = widget.control.getString(
+      'document_directory',
+      '',
+    )!;
     if (documentDirectory.isEmpty) return null;
     final platformPath = imageUrl.replaceAll('/', path.separator);
     final resolved = path.isAbsolute(platformPath)
         ? platformPath
         : path.normalize(path.join(documentDirectory, platformPath));
     return FileImage(io.File(resolved));
+  }
+
+  Widget _buildImageErrorWidget(
+    BuildContext context,
+    Object error,
+    StackTrace? stackTrace,
+  ) {
+    if (!_imageRenderErrorReported) {
+      _imageRenderErrorReported = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !widget.control.hasEventHandler('render_error')) return;
+        widget.control.triggerEvent('render_error', error.toString());
+      });
+    }
+    return Container(
+      constraints: const BoxConstraints(minHeight: 96),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF5F6F8),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFE1E4E9)),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.broken_image_outlined, color: Color(0xFF8A909A)),
+          SizedBox(width: 10),
+          Flexible(
+            child: Text(
+              '图片无法显示，其他内容仍可继续编辑',
+              style: TextStyle(color: Color(0xFF737986), fontSize: 14),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -165,6 +299,7 @@ class _FletQuillEditorControlState extends State<FletQuillEditorControl> {
       scrollController: _scrollController,
       config: QuillEditorConfig(
         autoFocus: widget.control.getBool('autofocus', false)!,
+        onKeyPressed: _handleEditorKeyEvent,
         expands: true,
         scrollable: true,
         placeholder: placeholder,
@@ -184,8 +319,9 @@ class _FletQuillEditorControlState extends State<FletQuillEditorControl> {
           ),
         ),
         embedBuilders: FlutterQuillEmbeds.editorBuilders(
-          imageEmbedConfig: QuillEditorImageEmbedConfig(
+          imageEmbedConfig: safeImageEmbedConfig(
             imageProviderBuilder: _localImageProvider,
+            imageErrorWidgetBuilder: _buildImageErrorWidget,
           ),
         ),
       ),
