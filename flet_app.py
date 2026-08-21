@@ -147,6 +147,37 @@ QUICK_ENTRY_ICON_CONSTRAINTS = ft.BoxConstraints(
 )
 
 
+# 将说明文案集中为一个固定值，避免不同入口的内容不一致，也避免运行时
+# 从可能为空的编辑器状态中拼接文案而引发异常。
+MAINLINE_GOAL_GUIDE = """创建主线前，问自己三个问题
+
+1. 我有没有相关的基础、经验、兴趣，或者愿不愿意长期发展这项能力？
+这样问，是为了分辨这是真正愿意投入的目标，还是新鲜感制造的想象，同时看清自己接下来需要增长什么。
+
+2. 我的目标能给我之外的人或世界带来什么？
+这样问，是为了确认目标具有正向价值。价值感能让自己产生更强的信念，在困难时更容易坚持。
+
+3. 驱动我实现这个目标的理由是什么？
+这样问，是为了确认除了未来的利益和认可，自己是否也愿意做实现目标所需的事情，避免回报迟迟不出现时迅速放弃。"""
+
+
+def mainline_goal_guide_button() -> ft.IconButton:
+    """构建显示在新建主线返回入口旁、无需事件回调的悬停说明。"""
+    return ft.IconButton(
+        ft.Icons.HELP_OUTLINE_ROUNDED,
+        icon_color=MUTED,
+        icon_size=20,
+        tooltip=ft.Tooltip(
+            message=MAINLINE_GOAL_GUIDE,
+            bgcolor=INK,
+            padding=ft.Padding.all(16),
+            prefer_below=True,
+            text_style=ft.TextStyle(size=13, color=ft.Colors.WHITE, height=1.45),
+            size_constraints=ft.BoxConstraints(max_width=460),
+        ),
+    )
+
+
 class EntpFletApp:
     """Flet UI shell; the existing Database remains the single source of truth."""
 
@@ -2955,6 +2986,9 @@ class EntpFletApp:
                                 icon=ft.Icons.ARROW_BACK_ROUNDED,
                                 on_click=save_and_close,
                             ),
+                            # 说明组件不注册事件回调，悬停时不会进入保存流程；
+                            # 即使说明渲染失败，也不会留下只创建了一半的主线。
+                            mainline_goal_guide_button(),
                             ft.Container(expand=True),
                             ft.Text("新主线", size=13, color=MUTED),
                         ]
