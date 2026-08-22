@@ -9,7 +9,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import flet as ft
-from flet_quill_editor import FletQuillEditor
 
 from backup_service import export_workspace, inspect_backup
 
@@ -54,6 +53,15 @@ def _find(root: ft.Control, control_type, **properties):
     raise AssertionError(
         f"找不到控件 {control_type.__name__}，属性={properties}"
     )
+
+
+def _find_markdown_editor(root: ft.Control) -> ft.Control:
+    """Find either the native Quill editor or the local-preview fallback."""
+
+    for control in _walk(root):
+        if getattr(control, "data", None) == "markdown-editor":
+            return control
+    raise AssertionError("找不到 Markdown 编辑器")
 
 
 class DesktopE2ERunner:
@@ -127,6 +135,90 @@ class DesktopE2ERunner:
         self.context["task_id"] = task_id
         return f"任务 T{task_id:04d} 已进入当前主线和今日账本"
 
+    def _subtask_hierarchy(self) -> str:
+        parent_id = int(self.context["task_id"])
+        self.ui._subtask_shortcut_parent_id = parent_id
+        self.ui._quick_task_input_focused = True
+        self.ui.quick_task_input.value = "E2E Shift Enter 子任务"
+        self.ui._handle_task_keyboard_shortcut(
+            SimpleNamespace(key="Enter", shift=True)
+        )
+        self.ui._quick_task_input_focused = False
+        shortcut_child = next(
+            row
+            for row in self.ui.db.list_subtasks(parent_id)
+            if str(row["title"]) == "E2E Shift Enter 子任务"
+        )
+
+        self.ui.begin_add_subtask(parent_id)
+        root = self.ui.content_switcher.content
+        field = _find(
+            root,
+            ft.TextField,
+            hint_text="输入子任务，按回车继续；空输入回车结束",
+        )
+        field.value = "E2E 父任务下面的子任务"
+        field.on_submit(SimpleNamespace(control=field))
+
+        child = next(
+            row
+            for row in self.ui.db.list_subtasks(parent_id)
+            if str(row["title"]) == "E2E 父任务下面的子任务"
+        )
+        child_id = int(child["id"])
+        self.context["subtask_id"] = child_id
+        root = self.ui.content_switcher.content
+        assert _find(root, ft.Text, value="E2E 父任务下面的子任务")
+        child_drag = next(
+            control
+            for control in _walk(root)
+            if isinstance(control, ft.Draggable) and control.data == child_id
+        )
+        assert any(
+            isinstance(control, ft.Text)
+            and control.value == "E2E 父任务下面的子任务"
+            for control in _walk(child_drag.content)
+        )
+        assert not any(
+            isinstance(control, ft.Icon)
+            and control.icon == ft.Icons.DRAG_INDICATOR_ROUNDED
+            for control in _walk(root)
+        )
+        assert child_drag.group == self.ui.TASK_DRAG_GROUP
+        assert child_drag.on_drag_start is not None
+        assert child_drag.on_drag_complete is not None
+        assert child_drag.max_simultaneous_drags == 1
+
+        self.ui.show_view(self.ui.NAV_TODAY)
+        today_root = self.ui.content_switcher.content
+        assert _find(today_root, ft.Text, value="E2E Shift Enter 子任务")
+        assert _find(today_root, ft.Text, value="E2E 父任务下面的子任务")
+        self.ui.show_view(self.ui.NAV_CURRENT)
+
+        self.ui.toggle_subtask(child_id, True)
+        assert str(self.ui.db.get_task(child_id)["status"]) == "完成"
+        assert str(self.ui.db.get_task(parent_id)["status"]) != "完成"
+        self.ui.toggle_subtask(child_id, False)
+
+        # 模拟 Flet 官方顺序：DragTarget 接受数据，随后 Draggable 完成拖动。
+        self.ui._start_task_framework_drag()
+        self.ui.promote_subtask(SimpleNamespace(src=child_drag))
+        self.ui._finish_task_framework_drag()
+        assert self.ui.db.get_task(child_id)["parent_task_id"] is None
+        assert any(
+            int(entry["task_id"]) == child_id
+            for entry in self.ui.db.list_daily_entries(self.ui.db.today_iso())
+            if entry["task_id"] is not None
+        )
+        self.ui._start_task_framework_drag()
+        self.ui.drop_task_under(SimpleNamespace(src=child_drag), parent_id)
+        self.ui._finish_task_framework_drag()
+        assert int(self.ui.db.get_task(child_id)["parent_task_id"]) == parent_id
+        # 场景结束时收口子任务，避免影响后续“无待办子任务时直接完成父任务”的用例。
+        self.ui.toggle_subtask(child_id, True)
+        self.ui.toggle_subtask(int(shortcut_child["id"]), True)
+        return "Shift+Enter、行内创建、主线/今日同步、拖出提升和拖回缩进均通过"
+
     async def _edit_task_detail(self) -> str:
         task_id = int(self.context["task_id"])
         captured: list[ft.AlertDialog] = []
@@ -146,25 +238,38 @@ class DesktopE2ERunner:
         self.ui._protect_control_tree(dialog)
         assert dialog.modal is False
         title = _find(dialog, ft.TextField, value="E2E 一次点击新增任务")
-        description = _find(dialog, FletQuillEditor)
+        description = _find_markdown_editor(dialog)
+        assert title.multiline and title.max_lines is None
         assert description.visible and description.autofocus
         assert not any(
             getattr(control, "content", None) in {"编辑", "完成编辑", "正在编辑"}
             for control in _walk(dialog)
         )
-        title.value = "E2E 已整理任务"
-        description.value = "从界面任务详情直接输入的背景。"
+        long_title = "E2E 这是一个超过单行宽度但在任务列表和详情里都必须完整可见的长标题"
+        title.value = long_title
         title.on_change(SimpleNamespace(control=title))
+        await asyncio.sleep(0.6)
+        assert self.ui.db.get_task(task_id)["description"] == str(description.value or "")
+
+        description.value = "从界面任务详情直接输入的背景。"
         description.on_change(
             SimpleNamespace(control=description, data=description.value)
         )
         await asyncio.sleep(0.6)
         task = self.ui.db.get_task(task_id)
-        assert task["title"] == "E2E 已整理任务"
+        assert task["title"] == long_title
         assert task["description"] == "从界面任务详情直接输入的背景。"
+        # Draggable 内还有一个单行的浮动预览；这里必须验证实际任务行，
+        # 不能把拖动反馈误当成用户静止时看到的列表标题。
+        matching_titles = [
+            control
+            for control in _walk(self.ui.task_holder)
+            if isinstance(control, ft.Text) and control.value == long_title
+        ]
+        assert any(control.max_lines == 2 for control in matching_titles)
         assert "从界面任务详情" in self.ui.markdown.read("task", task_id)
         self.ui.close_task_detail()
-        return "任务弹窗打开即可输入，停顿后自动保存；点击遮罩可关闭，原生测试覆盖图片粘贴"
+        return "长标题在列表显示两行、详情完整换行并自动保存；点击遮罩可关闭，原生测试覆盖图片粘贴"
 
     def _focus_and_execute_task(self) -> str:
         task_id = int(self.context["task_id"])
@@ -280,7 +385,7 @@ class DesktopE2ERunner:
         root = self.page._dialogs.controls[-1]
         assert root.modal is False
         title = _find(root, ft.TextField, value="E2E 当前页暂存灵感")
-        raw = _find(root, FletQuillEditor)
+        raw = _find_markdown_editor(root)
         tag = _find(root, ft.TextField, hint_text="＋ 添加标签")
         title.value = "E2E 已审视灵感"
         raw.value = "自由正文，没有预设问题。"
@@ -371,7 +476,7 @@ class DesktopE2ERunner:
         dialog = self.page._dialogs.controls[-1]
         self.ui._protect_control_tree(dialog)
         assert dialog.modal is False
-        editor = _find(dialog, FletQuillEditor)
+        editor = _find_markdown_editor(dialog)
         editor.value = str(editor.value) + "\nE2E 用户自由 Markdown 正文。\n"
         editor.on_change(SimpleNamespace(control=editor, data=editor.value))
         editor.on_blur(SimpleNamespace(control=editor))
@@ -551,8 +656,9 @@ class DesktopE2ERunner:
         await self.case("E2E-01", "启动与统一异常边界", self._startup)
         await self.case("E2E-02", "主线创建与切换", self._create_and_switch_mainline)
         await self.case("E2E-03", "任务快速新增", self._quick_add_task)
+        await self.case("E2E-20", "子任务层级与拖放", self._subtask_hierarchy)
         await self.case("E2E-04", "任务详情自动保存", self._edit_task_detail)
-        await self.case("E2E-05", "焦点与现实执行记录", self._focus_and_execute_task)
+        await self.case("E2E-05", "焦点与直接完成入口", self._focus_and_execute_task)
         await self.case("E2E-06", "完成/重开/完成日历", self._complete_reopen_calendar)
         await self.case("E2E-07", "今日收集箱与过期顺延", self._today_inbox_and_carry)
         await self.case("E2E-08", "日历空状态与跨月", self._calendar_empty_and_month_navigation)

@@ -27,13 +27,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Installer build failed: $LASTEXITCODE" }
 
     $BuiltInstaller = Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "release") `
-        -Filter "*2.1.5*.exe" | Where-Object { $_.Name -ne "ENTPManual.exe" } | `
+        -Filter "*2.1.9*.exe" | Where-Object { $_.Name -ne "ENTPManual.exe" } | `
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $BuiltInstaller) { throw "Built installer was not found." }
 
     & powershell.exe -NoProfile -ExecutionPolicy Bypass `
         -File (Join-Path $PSScriptRoot "create_update_manifest.ps1") `
-        -Version "2.1.5" `
+        -Version "2.1.9" `
         -InstallerPath $BuiltInstaller.FullName `
         -OutputPath (Join-Path $ProjectRoot "release\update.json")
     if ($LASTEXITCODE -ne 0) { throw "Update manifest generation failed: $LASTEXITCODE" }

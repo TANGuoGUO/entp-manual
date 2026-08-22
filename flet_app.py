@@ -10,6 +10,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 import traceback
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -32,7 +33,7 @@ from backup_service import (
     inspect_backup,
     restore_workspace,
 )
-from app_version import APP_VERSION
+from app_version import APP_VERSION, INTERNAL_DEMO_BUILD
 from database import Database
 from markdown_store import MarkdownStore
 from update_service import (
@@ -90,6 +91,84 @@ GREEN_SOFT = "#EAF7EF"
 AMBER = "#B87818"
 AMBER_SOFT = "#FFF6DF"
 RED = "#E45959"
+
+
+def native_quill_available() -> bool:
+    """Return whether the current Flet client contains our Quill extension.
+
+    A direct ``python flet_app.py`` launch connects to Flet's prebuilt client,
+    which cannot render project-specific Flutter controls. Packaged/debug
+    native builds expose an application data directory and do contain the
+    extension. The environment override is useful for extension development.
+    """
+
+    override = os.environ.get("ENTP_MARKDOWN_EDITOR", "").strip().lower()
+    if override in {"plain", "text", "compat"}:
+        return False
+    if override in {"quill", "native"}:
+        return True
+    return bool(flet_storage_data or getattr(sys, "frozen", False))
+
+
+def build_markdown_editor(
+    *,
+    value: str,
+    placeholder: str,
+    document_directory: str,
+    image_directory: str,
+    image_link_prefix: str,
+    text_size: float = 16,
+    expand: bool = True,
+    autofocus: bool = False,
+    paste_on_mount: bool = False,
+    use_native_quill: bool | None = None,
+) -> ft.Control:
+    """Build a Markdown editor that remains usable in every launch mode.
+
+    Native builds get the rich Quill editor. Local Python previews fall back
+    to a standard multiline field instead of sending an unknown custom
+    control to the stock Flet client.
+    """
+
+    use_quill = native_quill_available() if use_native_quill is None else use_native_quill
+    if use_quill:
+        return FletQuillEditor(
+            value=value,
+            placeholder=placeholder,
+            document_directory=document_directory,
+            image_directory=image_directory,
+            image_link_prefix=image_link_prefix,
+            text_size=text_size,
+            expand=expand,
+            autofocus=autofocus,
+            paste_on_mount=paste_on_mount,
+            data="markdown-editor",
+        )
+    return ft.TextField(
+        value=value,
+        hint_text=placeholder,
+        multiline=True,
+        min_lines=12,
+        expand=expand,
+        text_size=text_size,
+        autofocus=autofocus,
+        border=ft.InputBorder.NONE,
+        content_padding=ft.Padding.symmetric(horizontal=4, vertical=10),
+        data="markdown-editor",
+    )
+
+
+def configure_markdown_editor_errors(
+    editor: ft.Control,
+    *,
+    on_paste_error,
+    on_render_error,
+) -> None:
+    """Attach extension-only events without breaking the plain fallback."""
+
+    if isinstance(editor, FletQuillEditor):
+        editor.on_paste_error = on_paste_error
+        editor.on_render_error = on_render_error
 
 
 def rounded(radius: int = 18) -> ft.RoundedRectangleBorder:
@@ -179,6 +258,7 @@ def mainline_goal_guide_button() -> ft.IconButton:
 
 
 class EntpFletApp:
+    TASK_DRAG_GROUP = "task-hierarchy"
     """Flet UI shell; the existing Database remains the single source of truth."""
 
     NAV_CURRENT = 0
@@ -209,11 +289,19 @@ class EntpFletApp:
         self._update_downloading = False
         self._original_page_update = page.update
         self.page.update = self._protected_page_update
+        self._markdown_sync_warning_signature: tuple[str, ...] = ()
+        self._handling_page_error = False
+        self._last_page_error: tuple[str, float] = ("", 0.0)
         self.file_picker = ft.FilePicker()
         self.page.services.append(self.file_picker)
         self.clipboard = ft.Clipboard()
         self.page.services.append(self.clipboard)
-        self.db = Database(db_path)
+        self.db = Database(
+            db_path,
+            internal_demo=(
+                INTERNAL_DEMO_BUILD and db_path.resolve() == DEFAULT_DB.resolve()
+            ),
+        )
         markdown_root = (
             ROOT / "markdown"
             if db_path.resolve() == DEFAULT_DB.resolve()
@@ -240,6 +328,15 @@ class EntpFletApp:
         self.calendar_holder = ft.Container()
         self.detail_holder = ft.Container()
         self.selected_task_id: int | None = None
+        self.expanded_task_ids: set[int] = set()
+        self.subtask_input_parent_id: int | None = None
+        self._subtask_shortcut_parent_id: int | None = None
+        # Flet 的拖放控件会先确认落点，再触发源控件的完成事件。这里仅保存
+        # 本次拖放结果，避免在原生拖动尚未结束时重建控件树。
+        self._task_drop_changed = False
+        self._task_drop_error: str | None = None
+        self._quick_task_input_focused = False
+        self._quick_today_input_focused = False
         self._task_detail_keyboard_restore = None
         self._active_editor_dialog: str | None = None
         self.selected_thought_id: int | None = None
@@ -342,6 +439,8 @@ class EntpFletApp:
             content_padding=ft.Padding.only(left=0, right=6, top=0, bottom=0),
             on_submit=self.quick_add_today_task,
         )
+        self.quick_today_input.on_focus = lambda _: self._set_today_input_focus(True)
+        self.quick_today_input.on_blur = lambda _: self._set_today_input_focus(False)
         self.vault_holder = ft.Column(spacing=16)
 
         self._configure_page()
@@ -390,7 +489,8 @@ class EntpFletApp:
             self.page.run_task(self._auto_check_for_updates)
 
     def _configure_page(self) -> None:
-        self.page.title = f"ENTP 自强手册 {APP_VERSION}"
+        edition = " · 内部演示" if INTERNAL_DEMO_BUILD else ""
+        self.page.title = f"ENTP 自强手册 {APP_VERSION}{edition}"
         window_icon = RESOURCE_ROOT / "assets" / "app-icon.ico"
         if window_icon.is_file():
             # Flet's development client otherwise keeps its own blue/red icon
@@ -426,6 +526,12 @@ class EntpFletApp:
             color_scheme_seed=BLUE,
             font_family="Microsoft YaHei UI",
             visual_density=ft.VisualDensity.COMFORTABLE,
+        )
+        # 全局只接管 Shift+Enter；普通 Enter 仍交给 TextField 的 on_submit，
+        # 因此不会改变用户原有的快速创建父任务习惯。
+        self.page.on_keyboard_event = self._wrap_event_handler(
+            self._handle_task_keyboard_shortcut,
+            "通过 Shift+Enter 创建子任务失败",
         )
 
     @staticmethod
@@ -468,7 +574,28 @@ class EntpFletApp:
         if getattr(self, "_closed", False):
             return False
         try:
-            self.markdown.sync_all(self.db)
+            self.markdown.sync_all(self.db, continue_on_error=True)
+            failures = self.markdown.last_sync_errors
+            if failures:
+                relative_paths: list[str] = []
+                for path, _error in failures:
+                    try:
+                        relative_paths.append(path.relative_to(self.markdown.root).as_posix())
+                    except ValueError:
+                        relative_paths.append(path.name)
+                signature = tuple(relative_paths)
+                details = "\n".join(
+                    f"{path}: {error}" for path, error in failures
+                )
+                self._write_runtime_error("部分 Markdown 文件同步失败", details)
+                if show_error and signature != self._markdown_sync_warning_signature:
+                    self._notify_error(
+                        f"有 {len(failures)} 个 Markdown 文件被占用，其他文档已正常同步。"
+                        f"关闭外部编辑器后再试：{relative_paths[0]}"
+                    )
+                self._markdown_sync_warning_signature = signature
+            else:
+                self._markdown_sync_warning_signature = ()
             return True
         except Exception as error:
             self._write_runtime_error("Markdown 同步失败", traceback.format_exc())
@@ -483,16 +610,33 @@ class EntpFletApp:
         self._write_runtime_error("Flet 运行期回调异常", details)
         if getattr(self, "_closed", False) or getattr(self, "_exiting", False):
             return
-        if self._recover_active_editor():
-            self._notify_error(
-                "Markdown 编辑器遇到异常，已自动关闭；主界面和已保存内容不受影响。"
-            )
+        now = time.monotonic()
+        signature, previous_time = getattr(self, "_last_page_error", ("", 0.0))
+        self._last_page_error = (details, now)
+        if getattr(self, "_handling_page_error", False) or (
+            details == signature and now - previous_time < 1.5
+        ):
             return
-        if "database is locked" in details.lower():
-            message = "数据库暂时被其他程序占用，本次操作没有完成。请稍后再试。"
-        else:
-            message = "这次操作没有完成，错误已经记录；当前窗口可以继续使用。"
-        self._notify_error(message)
+
+        # Flet 在拖动源刚被重建时可能上报这一条原生空值错误。数据库操作已经
+        # 完成，再弹 SnackBar 会触发第二轮页面更新并形成连续错误提示。
+        if details.strip() == "Null check operator used on a null value":
+            return
+
+        self._handling_page_error = True
+        try:
+            if self._recover_active_editor():
+                self._notify_error(
+                    "Markdown 编辑器遇到异常，已自动关闭；主界面和已保存内容不受影响。"
+                )
+                return
+            if "database is locked" in details.lower():
+                message = "数据库暂时被其他程序占用，本次操作没有完成。请稍后再试。"
+            else:
+                message = "这次操作没有完成，错误已经记录；当前窗口可以继续使用。"
+            self._notify_error(message)
+        finally:
+            self._handling_page_error = False
 
     def _recover_active_editor(self) -> bool:
         """Remove a failed rich editor without sacrificing the application shell."""
@@ -1401,102 +1545,277 @@ class EntpFletApp:
         )
 
     def _task_section(self, tasks) -> list[ft.Control]:
-        active = [t for t in tasks if str(t["status"]) != "完成"]
-        completed = [t for t in tasks if str(t["status"]) == "完成"]
+        # 子任务由父任务行负责呈现，不能再次出现在顶层任务统计中。
+        parents = [task for task in tasks if task["parent_task_id"] is None]
+        children_by_parent: dict[int, list] = {}
+        for task in tasks:
+            if task["parent_task_id"] is not None:
+                children_by_parent.setdefault(int(task["parent_task_id"]), []).append(task)
+        active = [t for t in parents if str(t["status"]) != "完成"]
+        completed = [t for t in parents if str(t["status"]) == "完成"]
         rows: list[ft.Control] = [
-            ft.Row(
+            self._task_promotion_target(
+                ft.Row(
                 [
                     section_title("这条主线的任务", f"{len(active)} 个待推进"),
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                )
             ),
         ]
-        rows.extend(self._task_row(t, completed=False) for t in active)
+        rows.extend(
+            self._task_row(
+                task,
+                completed=False,
+                subtasks=children_by_parent.get(int(task["id"]), []),
+            )
+            for task in active
+        )
         if completed:
             rows.append(
-                ft.Container(
-                    section_title("已完成", f"{len(completed)} 个现实结果"),
-                    padding=ft.Padding.only(top=20, bottom=6),
+                self._task_promotion_target(
+                    ft.Container(
+                        section_title("已完成", f"{len(completed)} 个现实结果"),
+                        padding=ft.Padding.only(top=20, bottom=6),
+                    )
                 )
             )
-            rows.extend(self._task_row(t, completed=True) for t in completed)
+            rows.extend(
+                self._task_row(
+                    task,
+                    completed=True,
+                    subtasks=children_by_parent.get(int(task["id"]), []),
+                )
+                for task in completed
+            )
         return rows
 
-    def _task_row(self, task, *, completed: bool) -> ft.Control:
+    def _task_draggable(
+        self,
+        task_id: int,
+        title: str,
+        content: ft.Control,
+    ) -> ft.Draggable:
+        """使用 Flet 原生拖动控件，让整行任务都成为拖动区域。"""
+
+        return ft.Draggable(
+            group=self.TASK_DRAG_GROUP,
+            data=task_id,
+            content=content,
+            content_feedback=ft.Container(
+                content=ft.Text(
+                    title,
+                    size=15,
+                    color=INK,
+                    max_lines=1,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                ),
+                width=320,
+                height=46,
+                padding=ft.Padding.symmetric(horizontal=16),
+                alignment=ft.Alignment.CENTER_LEFT,
+                bgcolor=SURFACE,
+                border=ft.Border.all(1, LINE),
+                border_radius=12,
+                shadow=ft.BoxShadow(
+                    blur_radius=14,
+                    color="#22000000",
+                    offset=ft.Offset(0, 5),
+                ),
+            ),
+            max_simultaneous_drags=1,
+            on_drag_start=lambda _: self._start_task_framework_drag(),
+            on_drag_complete=lambda _: self._finish_task_framework_drag(),
+        )
+
+    def _task_drop_target(self, parent_task_id: int, content: ft.Control) -> ft.DragTarget:
+        """父任务行是原生落点；只有 on_accept 才能进入数据层。"""
+
+        return ft.DragTarget(
+            group=self.TASK_DRAG_GROUP,
+            content=content,
+            on_accept=lambda event, pid=parent_task_id: self.drop_task_under(event, pid),
+        )
+
+    def _task_promotion_target(self, content: ft.Control) -> ft.DragTarget:
+        """复用分组标题作为无额外视觉元素的“拖出为父任务”落点。"""
+
+        return ft.DragTarget(
+            group=self.TASK_DRAG_GROUP,
+            content=ft.Container(
+                content=content,
+                tooltip="把子任务拖到这里，提升为父任务",
+            ),
+            on_accept=self.promote_subtask,
+        )
+
+    def _start_task_framework_drag(self) -> None:
+        # 每次拖动单独结算，防止上一次失败状态污染下一次操作。
+        self._task_drop_changed = False
+        self._task_drop_error = None
+
+    def _finish_task_framework_drag(self) -> None:
+        """原生拖动结束后才刷新控件树，避免 Flutter 引用已卸载的源控件。"""
+
+        changed = self._task_drop_changed
+        error = self._task_drop_error
+        self._task_drop_changed = False
+        self._task_drop_error = None
+        if changed:
+            self._sync_markdown()
+            self._refresh_task_surface()
+        elif error:
+            self._notify_error(error)
+
+    def _subtask_controls(
+        self,
+        parent_task_id: int,
+        subtasks,
+        *,
+        parent_completed: bool,
+        compact: bool = False,
+    ) -> list[ft.Control]:
+        if parent_task_id not in self.expanded_task_ids:
+            return []
+        controls = [
+            self._subtask_row(subtask, compact=compact)
+            for subtask in subtasks
+        ]
+        if self.subtask_input_parent_id == parent_task_id and not parent_completed:
+            controls.append(
+                ft.Container(
+                    content=ft.TextField(
+                        hint_text="输入子任务，按回车继续；空输入回车结束",
+                        hint_style=ft.TextStyle(size=14, color="#A9ADB6"),
+                        border=ft.InputBorder.NONE,
+                        filled=True,
+                        fill_color="#F7F8FA",
+                        text_size=14,
+                        autofocus=True,
+                        dense=True,
+                        height=44,
+                        on_submit=lambda event, pid=parent_task_id: self.add_subtask(event, pid),
+                    ),
+                    margin=ft.Margin.only(left=52, right=12, bottom=4),
+                    border_radius=8,
+                )
+            )
+        return controls
+
+    def _subtask_row(self, task, *, compact: bool) -> ft.Control:
         task_id = int(task["id"])
-        focused = bool(task["is_focus"])
+        completed = str(task["status"]) == "完成"
+        title = str(task["title"])
+        row = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Checkbox(
+                        value=completed,
+                        active_color=GREEN,
+                        on_change=lambda event, tid=task_id: self.toggle_subtask(
+                            tid, bool(event.control.value)
+                        ),
+                    ),
+                    ft.Text(
+                        title,
+                        size=15,
+                        color="#AEB2BA" if completed else INK,
+                        max_lines=2,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                        expand=True,
+                    ),
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            height=60,
+            padding=ft.Padding.only(left=4, right=14),
+            bgcolor=SURFACE,
+            on_click=lambda _, tid=task_id: self.select_task(tid),
+        )
+        return ft.Container(
+            content=self._task_draggable(task_id, title, row),
+            margin=ft.Margin.only(left=48, right=8),
+            height=60,
+        )
+
+    def _task_row(self, task, *, completed: bool, subtasks) -> ft.Control:
+        task_id = int(task["id"])
         selected = task_id == self.selected_task_id
         title = str(task["title"])
-        status_hint = "现实完成已记入日历" if completed else "点击查看详情"
-        trailing = (
-            pill("当前", color=BLUE, bgcolor=BLUE_SOFT)
-            if focused and not completed
-            else ft.IconButton(
-                ft.Icons.FLAG_OUTLINED,
-                tooltip="设为当前任务",
-                icon_color=MUTED,
-                on_click=lambda _, tid=task_id: self.set_focus_task(tid),
-                visible=not completed,
-            )
-        )
+        can_expand = bool(subtasks) or self.subtask_input_parent_id == task_id
         tile = ft.Container(
-            content=ft.ListTile(
-                leading=ft.Checkbox(
-                    value=completed,
-                    active_color=GREEN,
-                    on_change=lambda e, tid=task_id: self.toggle_task(
-                        tid, bool(e.control.value)
-                    ),
-                ),
-                title=ft.Text(
-                    title,
-                    size=16,
-                    weight=ft.FontWeight.W_600,
-                    color="#A5A9B2" if completed else INK,
-                ),
-                subtitle=ft.Text(
-                    status_hint,
-                    size=12,
-                    color="#B3B6BD" if completed else MUTED,
-                ),
-                trailing=ft.Row(
-                    [
-                        ft.IconButton(
-                            ft.Icons.DESCRIPTION_OUTLINED,
-                            tooltip="打开任务 Markdown",
-                            icon_color=MUTED,
-                            on_click=lambda _, tid=task_id: self.open_markdown("task", tid),
+            content=ft.Row(
+                [
+                    ft.Container(
+                        content=ft.Icon(
+                            ft.Icons.KEYBOARD_ARROW_DOWN_ROUNDED
+                            if task_id in self.expanded_task_ids
+                            else ft.Icons.KEYBOARD_ARROW_RIGHT_ROUNDED,
+                            size=17,
+                            color="#969BA4",
+                        ) if can_expand else None,
+                        width=28,
+                        height=44,
+                        alignment=ft.Alignment.CENTER,
+                        on_click=(
+                            (lambda _, tid=task_id: self.toggle_task_children(tid))
+                            if can_expand
+                            else None
                         ),
-                        trailing,
-                    ],
-                    spacing=2,
-                    tight=True,
-                ),
-                content_padding=ft.Padding.symmetric(horizontal=10, vertical=7),
-                min_height=78,
-                on_click=lambda _, tid=task_id: self.select_task(tid),
+                    ),
+                    ft.Checkbox(
+                        value=completed,
+                        active_color=GREEN,
+                        on_change=lambda e, tid=task_id: self.request_toggle_task(
+                            tid, bool(e.control.value)
+                        ),
+                    ),
+                    ft.Text(
+                        title,
+                        size=16,
+                        weight=ft.FontWeight.W_500,
+                        color="#A5A9B2" if completed else INK,
+                        max_lines=2,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                        expand=True,
+                    ),
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            bgcolor="#F1F2F4" if selected else ("#FAFAFB" if completed else SURFACE),
-            border_radius=12 if selected else 0,
-            animate=120,
+            height=64,
+            padding=ft.Padding.only(left=4, right=14),
+            bgcolor="#F7F8FA" if selected else SURFACE,
+            border_radius=10,
+            on_click=lambda _, tid=task_id: self.select_task(tid),
         )
-        return ft.Column(
-            [
-                tile,
-                ft.Divider(
-                    height=1,
-                    color=LINE,
-                    leading_indent=56,
-                    trailing_indent=8,
-                ),
-            ],
-            spacing=0,
+        draggable = self._task_draggable(task_id, title, tile)
+        return ft.Container(
+            content=ft.Column(
+                [
+                    self._task_drop_target(task_id, draggable),
+                    *self._subtask_controls(
+                        task_id,
+                        subtasks,
+                        parent_completed=completed,
+                    ),
+                ],
+                spacing=0,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            ),
+            bgcolor=SURFACE,
+            border=ft.Border.all(1, LINE),
+            border_radius=14,
+            padding=ft.Padding.symmetric(horizontal=6, vertical=4),
+            margin=ft.Margin.only(bottom=8),
         )
 
     def _task_detail_dialog(self, task) -> ft.AlertDialog:
         task_id = int(task["id"])
         completed = str(task["status"]) == "完成"
         focused = bool(task["is_focus"])
+        is_subtask = task["parent_task_id"] is not None
         initial_description = self.markdown.editor_body_with_legacy_images(
             "task", task_id, str(task["description"] or "")
         )
@@ -1510,12 +1829,17 @@ class EntpFletApp:
             text_size=23,
             text_style=ft.TextStyle(weight=ft.FontWeight.W_700, color=INK),
             content_padding=0,
+            multiline=True,
+            min_lines=1,
+            # 列表为保持整齐最多展示两行；详情承担查看完整数据的职责，
+            # 因此不能再用固定 max_lines 截掉超长标题。
+            max_lines=None,
         )
         document_path = self.markdown.path_for("task", task_id)
         image_directory, image_link_prefix = self.markdown.editor_image_context(
             "task", task_id
         )
-        description_editor = FletQuillEditor(
+        description_editor = build_markdown_editor(
             value=initial_description,
             placeholder="在这里直接记录……",
             document_directory=str(document_path.parent.resolve()),
@@ -1536,7 +1860,9 @@ class EntpFletApp:
         def save_fields(_=None) -> None:
             if self._closed or self._exiting:
                 return
-            title = str(title_field.value or "").strip() or str(task["title"])
+            # 详情标题允许自动换行显示，但数据库中的标题仍保持单段文本。
+            # 这样用户误按回车不会制造难以排序和搜索的多行标题。
+            title = " ".join(str(title_field.value or "").split()) or str(task["title"])
             description = str(state["description"])
             if title == last_saved["title"] and description == last_saved["description"]:
                 save_status.value = "已自动保存"
@@ -1556,7 +1882,9 @@ class EntpFletApp:
             self.page.update()
 
         def schedule_autosave(event) -> None:
-            if event is not None and getattr(event, "data", None) is not None:
+            # 标题和正文共用自动保存时，只允许正文事件更新 description，
+            # 避免输入标题时意外覆盖整篇 Markdown。
+            if getattr(event, "control", None) is description_editor:
                 state["description"] = str(event.data)
             state["autosave_revision"] += 1
             save_status.value = "正在自动保存…"
@@ -1592,9 +1920,12 @@ class EntpFletApp:
         title_field.on_change = schedule_autosave
         description_editor.on_blur = description_blur
         description_editor.on_change = schedule_autosave
-        description_editor.on_paste_error = description_paste_error
-        description_editor.on_render_error = lambda event: self._handle_editor_render_error(
-            "任务详情", event
+        configure_markdown_editor_errors(
+            description_editor,
+            on_paste_error=description_paste_error,
+            on_render_error=lambda event: self._handle_editor_render_error(
+                "任务详情", event
+            ),
         )
 
         header = ft.Container(
@@ -1613,10 +1944,14 @@ class EntpFletApp:
                     ft.Container(expand=True),
                     ft.IconButton(
                         ft.Icons.FLAG_ROUNDED if focused else ft.Icons.FLAG_OUTLINED,
-                        tooltip="当前任务" if focused else "设为当前任务",
+                        tooltip=(
+                            "子任务跟随父任务推进"
+                            if is_subtask
+                            else ("当前任务" if focused else "设为当前任务")
+                        ),
                         icon_color=BLUE if focused else MUTED,
                         on_click=make_focus,
-                        disabled=completed,
+                        disabled=completed or is_subtask,
                     ),
                     ft.IconButton(
                         ft.Icons.CLOSE_ROUNDED,
@@ -1634,6 +1969,17 @@ class EntpFletApp:
             content=ft.Column(
                 [
                     title_field,
+                    *(
+                        [
+                            ft.Text(
+                                f"父任务：{task['parent_task_title']}",
+                                size=13,
+                                color=MUTED,
+                            )
+                        ]
+                        if is_subtask
+                        else []
+                    ),
                     description_editor,
                 ],
                 spacing=10,
@@ -1652,7 +1998,13 @@ class EntpFletApp:
                         ],
                         spacing=6,
                     ),
-                    ft.Text("可直接粘贴文字或图片", size=12, color=MUTED),
+                    ft.Text(
+                        "可直接粘贴文字或图片"
+                        if isinstance(description_editor, FletQuillEditor)
+                        else "兼容编辑模式：支持 Markdown 文字编辑",
+                        size=12,
+                        color=MUTED,
+                    ),
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             ),
@@ -1771,7 +2123,7 @@ class EntpFletApp:
                         ft.Text("今天的实际收获", size=14, weight=ft.FontWeight.W_700, color=INK),
                         ft.Column(evidence, spacing=10),
                         ft.Text(
-                            "实际收获来自已经完成的任务和执行记录，不需要另外填写表格。",
+                            "实际收获来自已经完成的任务，不需要另外填写表格。",
                             size=12,
                             color=MUTED,
                         ),
@@ -2150,7 +2502,7 @@ class EntpFletApp:
         image_directory, image_link_prefix = self.markdown.editor_image_context(
             "thought", thought_id
         )
-        editor = FletQuillEditor(
+        editor = build_markdown_editor(
             value=initial_body,
             placeholder="直接写下你的想法，也可以粘贴图片……",
             document_directory=str(document_path.parent.resolve()),
@@ -2213,7 +2565,7 @@ class EntpFletApp:
             self.page.update()
 
         def schedule_autosave(event=None) -> None:
-            if isinstance(getattr(event, "control", None), FletQuillEditor):
+            if getattr(event, "control", None) is editor:
                 state["body"] = str(getattr(event, "data", "") or "")
             state["revision"] += 1
             save_status.value = "正在自动保存…"
@@ -2283,9 +2635,12 @@ class EntpFletApp:
         tag_input.on_submit = add_tag
         editor.on_change = schedule_autosave
         editor.on_blur = save_all
-        editor.on_paste_error = paste_error
-        editor.on_render_error = lambda event: self._handle_editor_render_error(
-            "候审灵感", event
+        configure_markdown_editor_errors(
+            editor,
+            on_paste_error=paste_error,
+            on_render_error=lambda event: self._handle_editor_render_error(
+                "候审灵感", event
+            ),
         )
         render_tags()
 
@@ -2337,7 +2692,13 @@ class EntpFletApp:
                 tag_holder,
                 ft.Divider(height=1, color=LINE),
                 editor,
-                ft.Text("可直接粘贴文字或图片，修改会自动保存", size=12, color=MUTED),
+                ft.Text(
+                    "可直接粘贴文字或图片，修改会自动保存"
+                    if isinstance(editor, FletQuillEditor)
+                    else "兼容编辑模式：Markdown 文字会自动保存",
+                    size=12,
+                    color=MUTED,
+                ),
             ],
             spacing=10,
             width=max(560, min(860, float(self.page.width or 1200) - 80)),
@@ -2796,7 +3157,7 @@ class EntpFletApp:
         stats = self.db.mainline_stats(mid)
         total = int(stats["total"] or 0)
         done = int(stats["done"] or 0)
-        tasks = self.db.list_tasks(mid)
+        tasks = self.db.list_tasks(mid, top_level_only=True)
         previews = [str(t["title"]) for t in tasks if str(t["status"]) != "完成"][:3]
         task_controls: list[ft.Control] = []
         for title in previews:
@@ -3077,7 +3438,7 @@ class EntpFletApp:
         image_directory, image_link_prefix = self.markdown.editor_image_context(
             "mainline", mainline_id
         )
-        editor = FletQuillEditor(
+        editor = build_markdown_editor(
             value=initial_body,
             placeholder="在这里记录这条主线的目标、思路和实际收获……",
             document_directory=str(document_path.parent.resolve()),
@@ -3114,7 +3475,7 @@ class EntpFletApp:
             self.page.update()
 
         def schedule_autosave(event=None) -> None:
-            if isinstance(getattr(event, "control", None), FletQuillEditor):
+            if getattr(event, "control", None) is editor:
                 state["body"] = str(getattr(event, "data", "") or "")
             state["revision"] += 1
             save_status.value = "正在自动保存…"
@@ -3166,9 +3527,12 @@ class EntpFletApp:
         title_field.on_blur = save
         editor.on_change = schedule_autosave
         editor.on_blur = save
-        editor.on_paste_error = paste_error
-        editor.on_render_error = lambda event: self._handle_editor_render_error(
-            "主线记录", event
+        configure_markdown_editor_errors(
+            editor,
+            on_paste_error=paste_error,
+            on_render_error=lambda event: self._handle_editor_render_error(
+                "主线记录", event
+            ),
         )
 
         is_current = mainline_id == self.db.current_mainline_id()
@@ -3227,7 +3591,13 @@ class EntpFletApp:
                 ),
                 ft.Divider(height=1, color=LINE),
                 editor,
-                ft.Text("可直接粘贴文字或图片，修改会自动保存", size=12, color=MUTED),
+                ft.Text(
+                    "可直接粘贴文字或图片，修改会自动保存"
+                    if isinstance(editor, FletQuillEditor)
+                    else "兼容编辑模式：Markdown 文字会自动保存",
+                    size=12,
+                    color=MUTED,
+                ),
             ],
             spacing=10,
             width=max(560, min(900, float(self.page.width or 1200) - 80)),
@@ -3656,12 +4026,15 @@ class EntpFletApp:
             )
             for entry in entries
         ]
+        header = ft.Container(
+            ft.Row(header_controls, spacing=6),
+            padding=ft.Padding.only(top=4, bottom=2),
+        )
+        if editable:
+            header = self._task_promotion_target(header)
         return ft.Column(
             [
-                ft.Container(
-                    ft.Row(header_controls, spacing=6),
-                    padding=ft.Padding.only(top=4, bottom=2),
-                ),
+                header,
                 *rows,
             ],
             spacing=0,
@@ -3677,6 +4050,8 @@ class EntpFletApp:
     ) -> ft.Control:
         entry_id = int(entry["id"])
         task_id = int(entry["task_id"]) if entry["task_id"] else None
+        subtasks = self.db.list_subtasks(task_id) if task_id is not None and editable else []
+        done_subtasks = sum(str(item["status"]) == "完成" for item in subtasks)
         mainline_color = str(entry["mainline_color"] or "#A6A9AE")
         checkbox_color = AMBER if str(entry["priority"]) == "重要" else mainline_color
         if completed:
@@ -3719,15 +4094,14 @@ class EntpFletApp:
             )
         ]
         if task_id is not None:
-            meta.append(
-                ft.IconButton(
-                    ft.Icons.DESCRIPTION_OUTLINED,
-                    tooltip="打开任务 Markdown",
-                    icon_size=18,
-                    icon_color="#CBCED4" if completed else "#A9AEB7",
-                    on_click=lambda _, tid=task_id: self.open_markdown("task", tid),
+            if subtasks:
+                meta.append(
+                    ft.Text(
+                        f"{done_subtasks}/{len(subtasks)}",
+                        size=12,
+                        color="#C2C5CB" if completed else BLUE,
+                    )
                 )
-            )
         meta.append(ft.Text(time_text, size=13, color=time_color))
 
         checkbox = ft.Checkbox(
@@ -3736,16 +4110,34 @@ class EntpFletApp:
             active_color=checkbox_color,
             check_color=ft.Colors.WHITE,
             on_change=(
-                lambda e, eid=entry_id: self.set_today_entry_completed(
-                    eid, bool(e.control.value)
+                lambda e, eid=entry_id, tid=task_id: self.request_toggle_today_entry(
+                    eid, tid, bool(e.control.value)
                 )
                 if editable
                 else None
             ),
         )
-        return ft.Container(
+        can_expand = bool(subtasks) or self.subtask_input_parent_id == task_id
+        row = ft.Container(
             content=ft.Row(
                 [
+                    ft.Container(
+                        content=ft.Icon(
+                            ft.Icons.KEYBOARD_ARROW_DOWN_ROUNDED
+                            if task_id in self.expanded_task_ids
+                            else ft.Icons.KEYBOARD_ARROW_RIGHT_ROUNDED,
+                            size=17,
+                            color="#969BA4",
+                        ) if editable and task_id is not None and can_expand else None,
+                        width=28,
+                        height=44,
+                        alignment=ft.Alignment.CENTER,
+                        on_click=(
+                            (lambda _, tid=task_id: self.toggle_task_children(tid))
+                            if editable and task_id is not None and can_expand
+                            else None
+                        ),
+                    ),
                     checkbox,
                     ft.Text(
                         str(entry["title"]),
@@ -3753,21 +4145,52 @@ class EntpFletApp:
                         color="#B9BDC4" if completed else INK,
                         expand=True,
                         max_lines=2,
+                        overflow=ft.TextOverflow.ELLIPSIS,
                     ),
                     ft.Row(meta, spacing=5, tight=True),
                 ],
-                spacing=10,
+                spacing=8,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            height=58,
-            padding=ft.Padding.symmetric(horizontal=8, vertical=4),
-            border=ft.Border.only(bottom=ft.BorderSide(1, LINE)),
-            ink=task_id is not None,
+            height=64,
+            padding=ft.Padding.only(left=4, right=14),
+            bgcolor=SURFACE,
+            border_radius=10,
             on_click=(
                 (lambda _, tid=task_id: self.select_task(tid))
-                if task_id is not None
+                if task_id is not None and editable
                 else None
             ),
+        )
+        parent_row: ft.Control = row
+        if task_id is not None and editable:
+            parent_row = self._task_drop_target(
+                task_id,
+                self._task_draggable(task_id, str(entry["title"]), row),
+            )
+        return ft.Container(
+            content=ft.Column(
+                [
+                    parent_row,
+                    *(
+                        self._subtask_controls(
+                            task_id,
+                            subtasks,
+                            parent_completed=completed,
+                            compact=True,
+                        )
+                        if task_id is not None and editable
+                        else []
+                    ),
+                ],
+                spacing=0,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            ),
+            bgcolor=SURFACE,
+            border=ft.Border.all(1, LINE),
+            border_radius=14,
+            padding=ft.Padding.symmetric(horizontal=6, vertical=4),
+            margin=ft.Margin.only(bottom=8),
         )
 
     def quick_add_today_task(self, event) -> None:
@@ -3775,13 +4198,14 @@ class EntpFletApp:
         if not title:
             return
         inbox_id = self.db.get_or_create_inbox()
-        self.db.create_task(
+        task_id = self.db.create_task(
             inbox_id,
             title,
             status="今日",
             due_date=date.today().isoformat(),
             is_today=True,
         )
+        self._subtask_shortcut_parent_id = task_id
         self._sync_markdown()
         event.control.value = ""
         self.show_view(self.NAV_TODAY)
@@ -4164,22 +4588,245 @@ class EntpFletApp:
         self._sync_markdown()
         self.refresh_current_sections()
 
+    def _confirm_completion_with_subtasks(self, task_id: int, on_confirm) -> bool:
+        pending = [
+            task
+            for task in self.db.list_subtasks(task_id)
+            if str(task["status"]) != "完成"
+        ]
+        if not pending:
+            return False
+
+        def cancel(_=None) -> None:
+            self._close_dialog()
+            self._refresh_task_surface()
+
+        def confirm(_=None) -> None:
+            self._close_dialog()
+            on_confirm()
+            self._sync_markdown()
+            self._refresh_task_surface()
+
+        self.page.show_dialog(
+            ft.AlertDialog(
+                modal=True,
+                title=ft.Text("还有未完成的子任务"),
+                content=ft.Text(f"是否连同剩余 {len(pending)} 个子任务一起完成？"),
+                actions=[
+                    ft.TextButton("取消", on_click=cancel),
+                    ft.FilledButton("全部完成", on_click=confirm),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+        )
+        self.page.update()
+        return True
+
+    def request_toggle_task(self, task_id: int, completed: bool) -> None:
+        """父任务完成前确认未完成子任务，取消时恢复复选框显示。"""
+        if completed and self._confirm_completion_with_subtasks(
+            task_id,
+            lambda: self.db.complete_task_with_subtasks(task_id),
+        ):
+            return
+        self.toggle_task(task_id, completed)
+
+    def request_toggle_today_entry(
+        self,
+        entry_id: int,
+        task_id: int | None,
+        completed: bool,
+    ) -> None:
+        if (
+            completed
+            and task_id is not None
+            and self._confirm_completion_with_subtasks(
+                task_id,
+                lambda: self.db.complete_daily_entry_with_subtasks(task_id, entry_id),
+            )
+        ):
+            return
+        self.set_today_entry_completed(entry_id, completed)
+
     def complete_current_task(self, task_id: int) -> None:
         """Finish the focus task immediately; the completion becomes calendar evidence."""
-        self.toggle_task(task_id, True)
+        self.request_toggle_task(task_id, True)
 
     def focus_quick_input(self, _=None) -> None:
         self.page.run_task(self.quick_task_input.focus)
 
     def _set_quick_input_focus_style(self, focused: bool) -> None:
+        self._quick_task_input_focused = focused
         self.quick_task_box.border = ft.Border.all(2 if focused else 1, BLUE if focused else LINE)
         self.quick_task_box.update()
+
+    def _set_today_input_focus(self, focused: bool) -> None:
+        self._quick_today_input_focused = focused
+
+    def _remember_subtask_parent(self, event, task_id: int) -> None:
+        """记住鼠标最后指向的父任务，供 Shift+Enter 明确选择归属。"""
+        if str(getattr(event, "data", "")).lower() == "true":
+            self._subtask_shortcut_parent_id = task_id
+
+    def _default_subtask_parent(self):
+        candidate_id = self._subtask_shortcut_parent_id
+        if candidate_id is not None:
+            candidate = self.db.get_task(candidate_id)
+            if (
+                candidate
+                and candidate["parent_task_id"] is None
+                and str(candidate["status"]) != "完成"
+            ):
+                return candidate
+        if self.active_index == self.NAV_CURRENT:
+            return self.db.get_focus_task(self.current_mid)
+        return None
+
+    def _handle_task_keyboard_shortcut(self, event: ft.KeyboardEvent) -> None:
+        """用 Shift+Enter 添加子任务，同时避开任务详情和 Markdown 编辑器。"""
+        key = str(event.key).lower()
+        if (
+            key == "escape"
+            and self.subtask_input_parent_id is not None
+            and self._active_editor_dialog is None
+        ):
+            self.subtask_input_parent_id = None
+            self._refresh_task_surface()
+            return
+        if (
+            key != "enter"
+            or not event.shift
+            or self._active_editor_dialog is not None
+        ):
+            return
+        parent = self._default_subtask_parent()
+        if not parent:
+            self._notify_error("请先将鼠标移到一个父任务上，再按 Shift+Enter。")
+            return
+
+        source_field = None
+        if self._quick_task_input_focused:
+            source_field = self.quick_task_input
+        elif self._quick_today_input_focused:
+            source_field = self.quick_today_input
+        title = str(source_field.value or "").strip() if source_field is not None else ""
+        if title:
+            self.db.create_task(
+                int(parent["mainline_id"]),
+                title,
+                parent_task_id=int(parent["id"]),
+            )
+            source_field.value = ""
+            self.expanded_task_ids.add(int(parent["id"]))
+            self._sync_markdown()
+            self._refresh_task_surface()
+            return
+        self.begin_add_subtask(int(parent["id"]))
+
+    def _refresh_task_surface(self) -> None:
+        """只刷新当前任务界面，保证主线和今日清单读取同一份层级数据。"""
+        if self.active_index == self.NAV_TODAY:
+            self.show_view(self.NAV_TODAY)
+        else:
+            self.refresh_current_sections()
+
+    def toggle_task_children(self, task_id: int) -> None:
+        if task_id in self.expanded_task_ids:
+            self.expanded_task_ids.remove(task_id)
+            if self.subtask_input_parent_id == task_id:
+                self.subtask_input_parent_id = None
+        else:
+            self.expanded_task_ids.add(task_id)
+        self._refresh_task_surface()
+
+    def begin_add_subtask(self, parent_task_id: int) -> None:
+        parent = self.db.get_task(parent_task_id)
+        if not parent or parent["parent_task_id"] is not None:
+            self._notify_error("请选择一个父任务添加子任务。")
+            return
+        if str(parent["status"]) == "完成":
+            self._notify_error("请先重新打开父任务，再添加子任务。")
+            return
+        self._subtask_shortcut_parent_id = parent_task_id
+        self.subtask_input_parent_id = parent_task_id
+        self.expanded_task_ids.add(parent_task_id)
+        self._refresh_task_surface()
+
+    def add_subtask(self, event, parent_task_id: int) -> None:
+        title = str(event.control.value or "").strip()
+        if not title:
+            # 空输入再次回车等同于结束连续添加，避免创建空记录。
+            self.subtask_input_parent_id = None
+            self._refresh_task_surface()
+            return
+        parent = self.db.get_task(parent_task_id)
+        if not parent:
+            self.subtask_input_parent_id = None
+            self._notify_error("父任务已经不存在，未创建子任务。")
+            self._refresh_task_surface()
+            return
+        self.db.create_task(
+            int(parent["mainline_id"]),
+            title,
+            parent_task_id=parent_task_id,
+        )
+        event.control.value = ""
+        self.expanded_task_ids.add(parent_task_id)
+        self._sync_markdown()
+        self._refresh_task_surface()
+
+    @staticmethod
+    def _dragged_task_id(event) -> int:
+        source = getattr(event, "src", None)
+        raw = getattr(source, "data", None)
+        if raw is None:
+            raise ValueError("无法识别拖动的任务")
+        return int(raw)
+
+    def drop_task_under(self, event, parent_task_id: int) -> None:
+        """在原生 DragTarget 确认落点后执行一次受校验的数据事务。"""
+
+        try:
+            task_id = self._dragged_task_id(event)
+            changed = self.db.move_task_under(task_id, parent_task_id)
+        except (TypeError, ValueError) as error:
+            # 拖动仍在 Flutter 侧收尾，此处只记录结果，结束回调再更新界面。
+            self._task_drop_error = str(error)
+            return
+        if changed:
+            self.expanded_task_ids.add(parent_task_id)
+            self._task_drop_changed = True
+
+    def promote_subtask(self, event) -> None:
+        """把子任务放到分组标题时提升为顶层任务。"""
+
+        try:
+            task_id = self._dragged_task_id(event)
+            task = self.db.get_task(task_id)
+            old_parent_id = int(task["parent_task_id"]) if task and task["parent_task_id"] else None
+            changed = self.db.promote_subtask(
+                task_id,
+                keep_today=self.active_index == self.NAV_TODAY,
+            )
+        except (TypeError, ValueError) as error:
+            self._task_drop_error = str(error)
+            return
+        if changed and old_parent_id is not None:
+            self.expanded_task_ids.add(old_parent_id)
+            self._task_drop_changed = True
+
+    def toggle_subtask(self, task_id: int, completed: bool) -> None:
+        self.db.set_subtask_completed(task_id, completed)
+        self._sync_markdown()
+        self._refresh_task_surface()
 
     def quick_add_task(self, event) -> None:
         title = str(event.control.value or "").strip()
         if not title:
             return
-        self.db.create_task(self.current_mid, title, is_today=True)
+        task_id = self.db.create_task(self.current_mid, title, is_today=True)
+        # 新建父任务后，紧接着输入并按 Shift+Enter 就能创建它的子任务。
+        self._subtask_shortcut_parent_id = task_id
         self._sync_markdown()
         event.control.value = ""
         self.refresh_current_sections()
@@ -4499,7 +5146,7 @@ class EntpFletApp:
 
     def open_mainline_tasks_dialog(self, mainline_id: int) -> None:
         mainline = next(m for m in self.db.list_mainlines() if int(m["id"]) == mainline_id)
-        tasks = self.db.list_tasks(mainline_id)
+        tasks = self.db.list_tasks(mainline_id, top_level_only=True)
         controls: list[ft.Control] = []
         for task in tasks:
             done = str(task["status"]) == "完成"
@@ -4745,39 +5392,6 @@ class EntpFletApp:
             f"完整工作空间已恢复。导入前的数据也已保存在：{safety_path}"
         )
 
-    def open_execution_dialog(self, task_id: int) -> None:
-        action = ft.TextField(label="我实际做了什么", autofocus=True, multiline=True, min_lines=2, max_lines=4, text_size=15, border_radius=12)
-        result = ft.TextField(label="产生了什么结果 / 发现", multiline=True, min_lines=2, max_lines=4, text_size=15, border_radius=12)
-        next_action = ft.TextField(label="接下来最小的一步（可选）", text_size=15, border_radius=12)
-        complete = ft.Checkbox(label="这项任务已经现实完成", value=False, active_color=GREEN)
-
-        def save(_) -> None:
-            if not action.value.strip():
-                action.error = "请写下实际行动"
-                action.update()
-                return
-            self.db.add_task_execution_log(
-                task_id,
-                action=action.value,
-                result=result.value,
-                next_action=next_action.value,
-                complete=bool(complete.value),
-            )
-            self._sync_markdown()
-            self._close_dialog()
-            self.refresh_current_sections()
-
-        self.page.show_dialog(
-            ft.AlertDialog(
-                modal=True,
-                title=ft.Text("记录一次现实执行", size=22, weight=ft.FontWeight.W_700),
-                content=ft.Column([action, result, next_action, complete], tight=True, spacing=13, width=560),
-                actions=[ft.TextButton("取消", on_click=lambda _: self._close_dialog()), ft.FilledButton("保存记录", on_click=save)],
-                shape=rounded(20),
-                scrollable=True,
-            )
-        )
-
     def open_stuck_dialog(self, task_id: int) -> None:
         # “卡住”在这里指好奇心降低，不是任务发生了技术阻塞。
         # 直接进入独立候审池，让用户自由审视任何灵感。
@@ -4866,6 +5480,9 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("ENTP_QA_TASK_DETAIL") == "1",
     )
     parser.add_argument("--qa-markdown")
+    parser.add_argument("--qa-expand-task", type=int)
+    parser.add_argument("--qa-add-subtask", type=int)
+    parser.add_argument("--qa-hide-focus", action="store_true")
     parser.add_argument("--qa-quick-add", action="store_true")
     parser.add_argument("--qa-input-focus", action="store_true")
     parser.add_argument("--qa-add-inspiration", action="store_true")
@@ -4876,7 +5493,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--qa-import-file", type=Path)
     parser.add_argument("--qa-boundary-report", type=Path)
     parser.add_argument("--qa-boundary-error", action="store_true")
-    parser.add_argument("--qa-execution-dialog", action="store_true")
     parser.add_argument("--qa-e2e-report", type=Path)
     parser.add_argument("--qa-runtime-error", action="store_true")
     parser.add_argument("--qa-window-state-report", type=Path)
@@ -4934,6 +5550,9 @@ def main() -> None:
                     args.qa_compact,
                     args.qa_task_detail,
                     args.qa_markdown,
+                    args.qa_expand_task,
+                    args.qa_add_subtask,
+                    args.qa_hide_focus,
                     args.qa_quick_add,
                     args.qa_input_focus,
                     args.qa_add_inspiration,
@@ -4944,7 +5563,6 @@ def main() -> None:
                     args.qa_import_file,
                     args.qa_boundary_report,
                     args.qa_boundary_error,
-                    args.qa_execution_dialog,
                     args.qa_e2e_report,
                     args.qa_runtime_error,
                     args.qa_window_state_report,
@@ -4956,7 +5574,9 @@ def main() -> None:
                 args.view,
                 start_hidden=args.start_hidden,
                 enable_update_checks=(
-                    not qa_mode and args.db.resolve() == DEFAULT_DB.resolve()
+                    not qa_mode
+                    and not INTERNAL_DEMO_BUILD
+                    and args.db.resolve() == DEFAULT_DB.resolve()
                 ),
             )
             if args.updated:
@@ -5070,13 +5690,20 @@ def main() -> None:
                 )
                 if target is not None:
                     ui.select_task(int(target["id"]))
-            if args.qa_execution_dialog:
-                target = next(iter(ui.db.list_tasks(ui.current_mid)), None)
-                if target is not None:
-                    ui.open_execution_dialog(int(target["id"]))
             if args.qa_markdown:
                 markdown_kind, raw_id = args.qa_markdown.split(":", 1)
                 ui.open_markdown(markdown_kind, int(raw_id))
+                await asyncio.sleep(0.5)
+            if args.qa_expand_task:
+                ui.expanded_task_ids.add(args.qa_expand_task)
+                ui.refresh_current_sections()
+                await asyncio.sleep(0.5)
+            if args.qa_add_subtask:
+                ui.begin_add_subtask(args.qa_add_subtask)
+                await asyncio.sleep(0.5)
+            if args.qa_hide_focus:
+                ui.focus_holder.visible = False
+                page.update()
                 await asyncio.sleep(0.5)
             if args.qa_boundary_error:
                 def force_isolated_failure(_event) -> None:

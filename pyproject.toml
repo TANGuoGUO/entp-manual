@@ -1,6 +1,6 @@
 [project]
 name = "entp-manual"
-version = "2.1.5"
+version = "2.1.9"
 description = "ENTP 自强手册"
 requires-python = ">=3.12,<3.14"
 dependencies = [

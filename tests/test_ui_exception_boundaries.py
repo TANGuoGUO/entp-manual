@@ -199,6 +199,20 @@ class UiExceptionBoundaryTests(unittest.TestCase):
 
         self.assertEqual(updates, [])
 
+    def test_ER_21_native_null_error_is_logged_without_recursive_notification(self) -> None:
+        self.app._closed = False
+        self.app._exiting = False
+        self.app._active_editor_dialog = None
+
+        self.app._handle_page_error(
+            SimpleNamespace(data="Null check operator used on a null value")
+        )
+        self.app._handle_page_error(
+            SimpleNamespace(data="Null check operator used on a null value")
+        )
+
+        self.assertEqual(self.messages, [])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

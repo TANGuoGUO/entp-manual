@@ -6,10 +6,38 @@ from pathlib import Path
 
 from flet_quill_editor import FletQuillEditor
 
+from flet_app import build_markdown_editor
 from markdown_store import MarkdownStore
 
 
 class QuillEditorIntegrationTests(unittest.TestCase):
+    def test_local_preview_uses_renderable_text_fallback(self) -> None:
+        editor = build_markdown_editor(
+            value="**正文**",
+            placeholder="输入 Markdown",
+            document_directory=".",
+            image_directory=".",
+            image_link_prefix="./assets",
+            use_native_quill=False,
+        )
+
+        self.assertEqual(editor.__class__.__name__, "TextField")
+        self.assertEqual(editor.data, "markdown-editor")
+        self.assertEqual(editor.value, "**正文**")
+
+    def test_native_build_uses_quill_editor(self) -> None:
+        editor = build_markdown_editor(
+            value="正文",
+            placeholder="输入 Markdown",
+            document_directory=".",
+            image_directory=".",
+            image_link_prefix="./assets",
+            use_native_quill=True,
+        )
+
+        self.assertIsInstance(editor, FletQuillEditor)
+        self.assertEqual(editor.data, "markdown-editor")
+
     def test_editor_exposes_direct_autosave_events(self) -> None:
         paste_errors: list[str] = []
         render_errors: list[str] = []

@@ -22,10 +22,17 @@ THOUGHT_STATUSES = (
 )
 INTEREST_LEVELS = ("一闪而过", "有点好奇", "很想继续", "持续着迷")
 RELATION_TYPES = ("支撑", "拆解", "启发", "冲突", "延伸")
+SCHEMA_VERSION = 218
 
 
 class Database:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        seed_on_empty: bool = True,
+        internal_demo: bool = False,
+    ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # A bounded wait handles brief antivirus/sync-tool contention without
@@ -35,7 +42,15 @@ class Database:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA busy_timeout = 2000")
         self._create_schema()
-        self._seed_if_empty()
+        if internal_demo and not self.row("SELECT 1 FROM mainlines LIMIT 1"):
+            # Import locally to keep the database module usable without demo
+            # content and to avoid a module-level dependency cycle.
+            from demo_data import populate_internal_demo
+
+            populate_internal_demo(self)
+        # QA databases can request the real schema without any initial rows.
+        elif seed_on_empty:
+            self._seed_if_empty()
         self._migrate_legacy_daily_entries()
         self._initialize_focus_state()
         self.refresh_today_flags()
@@ -61,6 +76,7 @@ class Database:
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 mainline_id INTEGER NOT NULL REFERENCES mainlines(id) ON DELETE CASCADE,
+                parent_task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
                 title TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT '待执行',
@@ -70,6 +86,7 @@ class Database:
                 is_focus INTEGER NOT NULL DEFAULT 0,
                 next_action TEXT NOT NULL DEFAULT '',
                 progress INTEGER NOT NULL DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -204,6 +221,33 @@ class Database:
         self._ensure_column("tasks", "completed_at", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("tasks", "is_focus", "INTEGER NOT NULL DEFAULT 0")
         self._ensure_column("tasks", "next_action", "TEXT NOT NULL DEFAULT ''")
+        # SQLite 允许以 NULL 默认值增加自引用外键。这样从 2.1.5 及更早
+        # 版本直接升级的数据库，与全新 2.1.9 数据库具有相同的删除语义。
+        self._ensure_column(
+            "tasks",
+            "parent_task_id",
+            "INTEGER REFERENCES tasks(id) ON DELETE SET NULL DEFAULT NULL",
+        )
+        self._ensure_column("tasks", "sort_order", "INTEGER NOT NULL DEFAULT 0")
+        # 旧数据没有顺序字段。只迁移一次，避免后来合法写入的 0 顺序在
+        # 每次启动时又被误判成旧数据。
+        sort_migration = self.conn.execute(
+            "SELECT value FROM app_settings WHERE key = 'task_sort_order_migration_version'"
+        ).fetchone()
+        if not sort_migration or str(sort_migration[0]) != "1":
+            self.conn.execute(
+                "UPDATE tasks SET sort_order = -id WHERE sort_order = 0"
+            )
+            self.conn.execute(
+                """INSERT INTO app_settings(key, value)
+                   VALUES ('task_sort_order_migration_version', '1')
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value"""
+            )
+        self.conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_tasks_parent_sort
+               ON tasks(parent_task_id, sort_order)"""
+        )
+        self._create_task_hierarchy_guards()
         self._ensure_column("mainlines", "focus_until", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column(
             "mainlines", "review_mode", "TEXT NOT NULL DEFAULT '按需复盘'"
@@ -228,12 +272,76 @@ class Database:
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_one_focus_task_per_mainline
                ON tasks(mainline_id) WHERE is_focus = 1 AND status <> '完成'"""
         )
+        # user_version 只在全部结构迁移成功后写入，便于后续版本准确识别基线。
+        self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self.conn.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
         columns = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
         if column not in columns:
             self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    def _create_task_hierarchy_guards(self) -> None:
+        """给已升级旧库补齐与新库外键等价且更严格的层级保护。"""
+
+        self.conn.executescript(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_tasks_parent_guard_insert
+            BEFORE INSERT ON tasks
+            WHEN NEW.parent_task_id IS NOT NULL
+            BEGIN
+                SELECT CASE WHEN NEW.parent_task_id = NEW.id
+                    THEN RAISE(ABORT, 'task cannot parent itself') END;
+                SELECT CASE WHEN NOT EXISTS (
+                    SELECT 1 FROM tasks parent
+                    WHERE parent.id = NEW.parent_task_id
+                      AND parent.mainline_id = NEW.mainline_id
+                      AND parent.parent_task_id IS NULL
+                ) THEN RAISE(ABORT, 'invalid task parent') END;
+                SELECT CASE WHEN NEW.is_today <> 0 OR NEW.is_focus <> 0
+                    THEN RAISE(ABORT, 'subtask cannot be today or focus') END;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_tasks_parent_guard_update
+            BEFORE UPDATE OF parent_task_id, mainline_id, is_today, is_focus ON tasks
+            WHEN NEW.parent_task_id IS NOT NULL
+            BEGIN
+                SELECT CASE WHEN NEW.parent_task_id = NEW.id
+                    THEN RAISE(ABORT, 'task cannot parent itself') END;
+                SELECT CASE WHEN NOT EXISTS (
+                    SELECT 1 FROM tasks parent
+                    WHERE parent.id = NEW.parent_task_id
+                      AND parent.mainline_id = NEW.mainline_id
+                      AND parent.parent_task_id IS NULL
+                ) THEN RAISE(ABORT, 'invalid task parent') END;
+                SELECT CASE WHEN EXISTS (
+                    SELECT 1 FROM tasks child WHERE child.parent_task_id = NEW.id
+                ) THEN RAISE(ABORT, 'task with children cannot become subtask') END;
+                SELECT CASE WHEN NEW.is_today <> 0 OR NEW.is_focus <> 0
+                    THEN RAISE(ABORT, 'subtask cannot be today or focus') END;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_tasks_parent_mainline_guard
+            BEFORE UPDATE OF mainline_id ON tasks
+            WHEN NEW.parent_task_id IS NULL AND EXISTS (
+                SELECT 1 FROM tasks child
+                WHERE child.parent_task_id = NEW.id
+                  AND child.mainline_id <> NEW.mainline_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'parent and children must share mainline');
+            END;
+
+            -- 早期测试版已经增加过普通 parent_task_id 列。该触发器为这些
+            -- 数据库补上 ON DELETE SET NULL，避免删除父记录后留下孤儿。
+            CREATE TRIGGER IF NOT EXISTS trg_tasks_parent_delete_set_null
+            AFTER DELETE ON tasks
+            BEGIN
+                UPDATE tasks SET parent_task_id = NULL
+                WHERE parent_task_id = OLD.id;
+            END;
+            """
+        )
 
     @staticmethod
     def local_timestamp() -> str:
@@ -253,6 +361,23 @@ class Database:
 
     def _migrate_legacy_daily_entries(self) -> None:
         """Snapshot the old permanent `is_today` flag into dated ledger rows once."""
+
+        if self.get_setting("daily_ledger_migration_version") == "1":
+            return
+        today = self.today_iso()
+        # 2.1.8 could incorrectly copy an already-planned today task to its
+        # future due date. Remove only that exact system-generated duplicate.
+        self.conn.execute(
+            """DELETE FROM daily_entries AS legacy
+               WHERE legacy.source = 'legacy' AND legacy.entry_date > ?
+                 AND EXISTS (
+                     SELECT 1 FROM daily_entries current
+                     WHERE current.task_id = legacy.task_id
+                       AND current.entry_date = ?
+                       AND current.source <> 'legacy'
+                 )""",
+            (today, today),
+        )
         tasks = self.rows(
             """SELECT t.*, m.name AS mainline_name, m.color AS mainline_color
                FROM tasks t JOIN mainlines m ON m.id = t.mainline_id
@@ -260,7 +385,10 @@ class Database:
         )
         now = self.local_timestamp()
         for task in tasks:
-            entry_day = task["due_date"] if self._valid_day(task["due_date"]) else self.today_iso()
+            # A task that already has ledger history must not be inferred a
+            # second time from the compatibility flag.
+            if self.row("SELECT 1 FROM daily_entries WHERE task_id = ? LIMIT 1", (task["id"],)):
+                continue
             state = "completed" if task["status"] == "完成" else "planned"
             self.conn.execute(
                 """INSERT OR IGNORE INTO daily_entries(
@@ -270,7 +398,7 @@ class Database:
                        completed_at, proof, created_at, updated_at
                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'legacy', ?, ?, ?, ?)""",
                 (
-                    entry_day,
+                    today,
                     task["id"],
                     task["title"],
                     task["mainline_id"],
@@ -285,6 +413,11 @@ class Database:
                     now,
                 ),
             )
+        self.conn.execute(
+            """INSERT INTO app_settings(key, value)
+               VALUES ('daily_ledger_migration_version', '1')
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value"""
+        )
         self.conn.commit()
 
     def _initialize_focus_state(self) -> None:
@@ -307,8 +440,14 @@ class Database:
             )
             if valid:
                 self.set_setting("current_mainline_id", str(valid["id"]))
-        for row in self.rows("SELECT id FROM mainlines"):
-            self._ensure_focus_for_mainline(int(row["id"]), commit=False)
+        for row in self.rows("SELECT id, status FROM mainlines"):
+            if str(row["status"]) == "已归档":
+                self.conn.execute(
+                    "UPDATE tasks SET is_focus = 0 WHERE mainline_id = ?",
+                    (row["id"],),
+                )
+            else:
+                self._ensure_focus_for_mainline(int(row["id"]), commit=False)
         self.conn.commit()
 
     def refresh_today_flags(self) -> None:
@@ -370,13 +509,13 @@ class Database:
             (
                 welcome_id,
                 "从这里开始：把下一步写小一点",
-                "当前任务会单独突出。点击任务可打开详情；“记录一次执行”用来留下行动、结果和新的下一步。",
+                "当前任务会单独突出。点击任务可以补充需要记住的内容。",
                 "执行中",
                 "重要",
                 today.isoformat(),
                 1,
                 1,
-                "点击“记录一次执行”，写下你刚刚真正做了什么",
+                "",
                 20,
                 "",
             ),
@@ -422,7 +561,7 @@ class Database:
             (
                 welcome_id,
                 "每个小块都有独立 Markdown 文档",
-                "主线、任务、灵感、执行记录和每日账本都会同步为本地 Markdown，方便长期记录和迁移。",
+                "主线、任务、灵感和每日账本都会同步为本地 Markdown，方便长期记录和迁移。",
                 "待执行",
                 "普通",
                 "",
@@ -569,41 +708,6 @@ class Database:
         cur.execute(
             "INSERT INTO thought_links(source_thought_id, target_thought_id, relation) VALUES (?, ?, ?)",
             (supporting_thought, selected_thought, "支撑"),
-        )
-
-        log_rows = [
-            (
-                selected_thought,
-                "示例行动：把一个大想法缩成 15 分钟能开始的动作。",
-                "示例结果：得到现实反馈，而不是只在脑中想通。",
-                "示例阻碍：第一次尝试不完整是正常的。",
-                "示例下一步：根据反馈决定继续、修改或归档。",
-                25,
-                now,
-            ),
-        ]
-        cur.executemany(
-            """INSERT INTO execution_logs(
-                thought_id, action, result, blocker, next_step, progress, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            log_rows,
-        )
-
-        cur.execute(
-            """INSERT INTO task_execution_logs(
-                   task_id, mainline_id, task_title_snapshot, action,
-                   result, next_action, event_date, created_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                selected_task,
-                welcome_id,
-                "从这里开始：把下一步写小一点",
-                "示例行动：打开应用并看见当前主线。",
-                "示例结果：已经知道执行区只突出一条主线。",
-                "把示例任务改成自己真正要做的下一步。",
-                today.isoformat(),
-                now,
-            ),
         )
 
         def seed_completion(task_title: str, day_value: date, completed_at: str) -> None:
@@ -823,14 +927,16 @@ class Database:
     def _ensure_focus_for_mainline(self, mainline_id: int, *, commit: bool = True) -> None:
         focused = self.row(
             """SELECT id FROM tasks
-               WHERE mainline_id = ? AND is_focus = 1 AND status <> '完成'
+               WHERE mainline_id = ? AND parent_task_id IS NULL
+                 AND is_focus = 1 AND status <> '完成'
                ORDER BY id LIMIT 1""",
             (mainline_id,),
         )
         if not focused:
             candidate = self.row(
                 """SELECT id FROM tasks
-                   WHERE mainline_id = ? AND status <> '完成'
+                   WHERE mainline_id = ? AND parent_task_id IS NULL
+                     AND status <> '完成'
                    ORDER BY is_today DESC,
                             CASE status WHEN '执行中' THEN 0 WHEN '今日' THEN 1 ELSE 2 END,
                             CASE priority WHEN '重要' THEN 0 ELSE 1 END,
@@ -855,14 +961,15 @@ class Database:
         return self.row(
             """SELECT t.*, m.name AS mainline_name, m.color AS mainline_color
                FROM tasks t JOIN mainlines m ON m.id = t.mainline_id
-               WHERE t.mainline_id = ? AND t.is_focus = 1 AND t.status <> '完成'
+               WHERE t.mainline_id = ? AND t.parent_task_id IS NULL
+                 AND t.is_focus = 1 AND t.status <> '完成'
                LIMIT 1""",
             (mainline_id,),
         )
 
     def set_focus_task(self, task_id: int) -> None:
         task = self.get_task(task_id)
-        if not task or task["status"] == "完成":
+        if not task or task["status"] == "完成" or task["parent_task_id"] is not None:
             return
         self.conn.execute(
             "UPDATE tasks SET is_focus = 0 WHERE mainline_id = ?",
@@ -878,7 +985,7 @@ class Database:
         return self.row(
             """SELECT COUNT(*) AS total,
                       SUM(CASE WHEN status = '完成' THEN 1 ELSE 0 END) AS done
-               FROM tasks WHERE mainline_id = ?""",
+               FROM tasks WHERE mainline_id = ? AND parent_task_id IS NULL""",
             (mainline_id,),
         )
 
@@ -887,6 +994,7 @@ class Database:
         mainline_id: int | None = None,
         status: str | None = None,
         today_only: bool = False,
+        top_level_only: bool = False,
     ) -> list[sqlite3.Row]:
         where: list[str] = []
         params: list[Any] = []
@@ -898,22 +1006,57 @@ class Database:
             params.append(status)
         if today_only:
             where.append("t.is_today = 1")
+        if top_level_only:
+            where.append("t.parent_task_id IS NULL")
         clause = " WHERE " + " AND ".join(where) if where else ""
         return self.rows(
-            """SELECT t.*, m.name AS mainline_name, m.color AS mainline_color
-               FROM tasks t JOIN mainlines m ON m.id = t.mainline_id"""
+            """SELECT t.*, m.name AS mainline_name, m.color AS mainline_color,
+                      parent.title AS parent_task_title
+               FROM tasks t JOIN mainlines m ON m.id = t.mainline_id
+               LEFT JOIN tasks parent ON parent.id = t.parent_task_id"""
             + clause
-            + " ORDER BY t.is_today DESC, t.id DESC",
+            + """ ORDER BY
+                    CASE WHEN t.parent_task_id IS NULL THEN t.sort_order
+                         ELSE COALESCE(parent.sort_order, t.sort_order) END,
+                    CASE WHEN t.parent_task_id IS NULL THEN 0 ELSE 1 END,
+                    t.sort_order, t.id""",
             params,
         )
 
     def get_task(self, task_id: int) -> sqlite3.Row | None:
         return self.row(
-            """SELECT t.*, m.name AS mainline_name, m.color AS mainline_color
+            """SELECT t.*, m.name AS mainline_name, m.color AS mainline_color,
+                      parent.title AS parent_task_title
                FROM tasks t JOIN mainlines m ON m.id = t.mainline_id
+               LEFT JOIN tasks parent ON parent.id = t.parent_task_id
                WHERE t.id = ?""",
             (task_id,),
         )
+
+    def list_subtasks(self, parent_task_id: int) -> list[sqlite3.Row]:
+        """返回父任务的直属子任务；产品只允许一层，不递归查询。"""
+        return self.rows(
+            """SELECT t.*, m.name AS mainline_name, m.color AS mainline_color,
+                      parent.title AS parent_task_title
+               FROM tasks t JOIN mainlines m ON m.id = t.mainline_id
+               JOIN tasks parent ON parent.id = t.parent_task_id
+               WHERE t.parent_task_id = ?
+               ORDER BY t.sort_order, t.id""",
+            (parent_task_id,),
+        )
+
+    def _next_task_sort_order(self, mainline_id: int, parent_task_id: int | None) -> int:
+        if parent_task_id is None:
+            row = self.row(
+                "SELECT MIN(sort_order) AS position FROM tasks WHERE mainline_id = ? AND parent_task_id IS NULL",
+                (mainline_id,),
+            )
+            return int(row["position"] or 0) - 1
+        row = self.row(
+            "SELECT MAX(sort_order) AS position FROM tasks WHERE parent_task_id = ?",
+            (parent_task_id,),
+        )
+        return int(row["position"] or 0) + 1
 
     def create_task(
         self,
@@ -925,20 +1068,37 @@ class Database:
         due_date: str = "",
         is_today: bool = False,
         next_action: str = "",
+        parent_task_id: int | None = None,
     ) -> int:
         clean_title = title.strip()
         if not clean_title:
             raise ValueError("任务标题不能为空")
         if status not in TASK_STATUSES:
             status = "待执行"
+        if parent_task_id is not None:
+            parent = self.get_task(parent_task_id)
+            if not parent:
+                raise ValueError("父任务不存在")
+            if int(parent["mainline_id"]) != int(mainline_id):
+                raise ValueError("子任务必须与父任务属于同一条主线")
+            if parent["parent_task_id"] is not None:
+                raise ValueError("目前只支持一层子任务")
+            if str(parent["status"]) == "完成":
+                raise ValueError("已完成任务不能继续添加子任务")
+            # 子任务跟随父任务显示，不单独进入今日账本或成为焦点任务。
+            is_today = False
+            status = "待执行"
         if is_today and status == "待执行":
             status = "今日"
+        sort_order = self._next_task_sort_order(mainline_id, parent_task_id)
         cur = self.conn.execute(
             """INSERT INTO tasks(
-                mainline_id, title, description, status, priority, due_date, is_today, next_action
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                mainline_id, parent_task_id, title, description, status, priority,
+                due_date, is_today, next_action, sort_order
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 mainline_id,
+                parent_task_id,
                 clean_title,
                 description.strip(),
                 status,
@@ -946,20 +1106,178 @@ class Database:
                 due_date,
                 int(is_today),
                 next_action.strip(),
+                sort_order,
             ),
         )
         task_id = int(cur.lastrowid)
         if is_today:
             self._plan_task_for_day(task_id, self.today_iso(), source="task_create")
-        self._ensure_focus_for_mainline(mainline_id, commit=False)
+        if parent_task_id is None:
+            self._ensure_focus_for_mainline(mainline_id, commit=False)
         self.conn.commit()
         return task_id
+
+    def move_task_under(self, task_id: int, parent_task_id: int) -> bool:
+        """将独立任务缩进为子任务，并保持数据变更为单次事务。"""
+        task = self.get_task(task_id)
+        parent = self.get_task(parent_task_id)
+        if not task or not parent:
+            raise ValueError("拖动的任务已经不存在")
+        if task_id == parent_task_id:
+            raise ValueError("任务不能成为自己的子任务")
+        if int(task["mainline_id"]) != int(parent["mainline_id"]):
+            raise ValueError("不能跨主线拖动为子任务")
+        if parent["parent_task_id"] is not None:
+            raise ValueError("目前只支持一层子任务")
+        if self.list_subtasks(task_id):
+            raise ValueError("含有子任务的任务不能再缩进")
+        if str(parent["status"]) == "完成":
+            raise ValueError("不能拖入已完成任务")
+        if task["parent_task_id"] == parent_task_id:
+            return False
+
+        # 删除今日计划、更新层级和重新选择焦点必须共同成功，否则整体回滚。
+        with self.conn:
+            today_entry = self.row(
+                "SELECT id, state FROM daily_entries WHERE task_id = ? AND entry_date = ?",
+                (task_id, self.today_iso()),
+            )
+            if today_entry and str(today_entry["state"]) == "planned":
+                self.conn.execute(
+                    "DELETE FROM daily_entries WHERE id = ?", (today_entry["id"],)
+                )
+            self.conn.execute(
+                """UPDATE tasks
+                   SET parent_task_id = ?, sort_order = ?, is_today = 0, is_focus = 0,
+                       status = CASE WHEN status = '今日' THEN '待执行' ELSE status END
+                   WHERE id = ?""",
+                (
+                    parent_task_id,
+                    self._next_task_sort_order(
+                        int(task["mainline_id"]), parent_task_id
+                    ),
+                    task_id,
+                ),
+            )
+            self._ensure_focus_for_mainline(int(task["mainline_id"]), commit=False)
+        return True
+
+    def promote_subtask(self, task_id: int, *, keep_today: bool = False) -> bool:
+        """将子任务拖出为父任务；若原父任务在今日，则保持它在今日可见。"""
+        task = self.get_task(task_id)
+        if not task:
+            raise ValueError("拖动的子任务已经不存在")
+        parent_id = task["parent_task_id"]
+        if parent_id is None:
+            return False
+        parent = self.get_task(int(parent_id))
+        inherit_today = bool(
+            task["status"] != "完成"
+            and (keep_today or (parent and parent["is_today"]))
+        )
+        status = "今日" if inherit_today and task["status"] == "待执行" else str(task["status"])
+        # 层级、今日账本与焦点任务同属一次事务，避免只更新一半。
+        with self.conn:
+            self.conn.execute(
+                """UPDATE tasks
+                   SET parent_task_id = NULL, sort_order = ?, is_today = ?, status = ?
+                   WHERE id = ?""",
+                (
+                    self._next_task_sort_order(int(task["mainline_id"]), None),
+                    int(inherit_today),
+                    status,
+                    task_id,
+                ),
+            )
+            if inherit_today:
+                self._plan_task_for_day(
+                    task_id, self.today_iso(), source="subtask_promoted"
+                )
+            self._ensure_focus_for_mainline(int(task["mainline_id"]), commit=False)
+        return True
+
+    def set_subtask_completed(self, task_id: int, completed: bool) -> None:
+        """更新子任务状态，但不创建独立的今日记录或完成日历证据。"""
+        task = self.get_task(task_id)
+        if not task or task["parent_task_id"] is None:
+            raise ValueError("目标不是子任务")
+        now = self.local_timestamp()
+        self.conn.execute(
+            """UPDATE tasks
+               SET status = ?, progress = ?, completed_at = ?, is_today = 0, is_focus = 0
+               WHERE id = ?""",
+            ("完成" if completed else "待执行", 100 if completed else 0, now if completed else "", task_id),
+        )
+        # 已完成父任务下面不能悬挂未完成子任务。用户重新打开子任务时，
+        # 父任务也回到可推进状态，并进入今天等待重新确认成果。
+        if not completed:
+            parent = self.get_task(int(task["parent_task_id"]))
+            if parent and str(parent["status"]) == "完成":
+                self.set_task_completed(int(parent["id"]), False)
+        self.conn.commit()
+
+    def _mark_subtasks_completed(self, parent_task_id: int) -> None:
+        """在当前事务中完成直属子任务；提交由外层用户动作统一负责。"""
+        parent = self.get_task(parent_task_id)
+        if not parent or parent["parent_task_id"] is not None:
+            raise ValueError("目标不是父任务")
+        now = self.local_timestamp()
+        self.conn.execute(
+            """UPDATE tasks SET status = '完成', progress = 100,
+                      completed_at = ?, is_today = 0, is_focus = 0
+               WHERE parent_task_id = ?""",
+            (now, parent_task_id),
+        )
+
+    def complete_subtasks(self, parent_task_id: int) -> None:
+        """完成直属子任务，但不改变父任务所在的每日账本记录。"""
+        self._mark_subtasks_completed(parent_task_id)
+        self.conn.commit()
+
+    def complete_task_with_subtasks(self, task_id: int) -> None:
+        """显式完成父任务时，一并收口仍未完成的直属子任务。"""
+        task = self.get_task(task_id)
+        if not task or task["parent_task_id"] is not None:
+            raise ValueError("只能完成父任务及其子任务")
+        self._mark_subtasks_completed(task_id)
+        entry = self.row(
+            "SELECT id FROM daily_entries WHERE task_id = ? AND entry_date = ?",
+            (task_id, self.today_iso()),
+        )
+        entry_id = (
+            int(entry["id"])
+            if entry
+            else self._plan_task_for_day(task_id, self.today_iso(), source="completion")
+        )
+        self._set_daily_entry_completed(entry_id, True)
+        self.conn.commit()
+
+    def complete_daily_entry_with_subtasks(self, task_id: int, entry_id: int) -> None:
+        """从今日清单完成父任务和子任务，保持整个动作原子化。"""
+        entry = self.row("SELECT task_id FROM daily_entries WHERE id = ?", (entry_id,))
+        if not entry or int(entry["task_id"] or 0) != task_id:
+            raise ValueError("每日记录与父任务不匹配")
+        self._mark_subtasks_completed(task_id)
+        self._set_daily_entry_completed(entry_id, True)
+        self.conn.commit()
 
     def update_task_status(self, task_id: int, status: str) -> None:
         if status not in TASK_STATUSES:
             return
+        task = self.get_task(task_id)
+        if not task:
+            return
+        if task["parent_task_id"] is not None:
+            if status == "完成":
+                self.set_subtask_completed(task_id, True)
+            else:
+                self.conn.execute(
+                    "UPDATE tasks SET status = ?, progress = 0, completed_at = '' WHERE id = ?",
+                    (status, task_id),
+                )
+                self.conn.commit()
+            return
         if status == "完成":
-            task = self.get_task(task_id)
             entry = self.row(
                 "SELECT id FROM daily_entries WHERE task_id = ? AND entry_date = ?",
                 (task_id, self.today_iso()),
@@ -1013,6 +1331,8 @@ class Database:
         task = self.get_task(task_id)
         if not task:
             return
+        if task["parent_task_id"] is not None:
+            raise ValueError("子任务跟随父任务显示，不能单独加入今日")
         status = task["status"]
         if is_today and status == "待执行":
             status = "今日"
@@ -1036,6 +1356,12 @@ class Database:
 
     def set_task_completed(self, task_id: int, completed: bool) -> None:
         """Complete or restore a task from the daily checklist."""
+        task = self.get_task(task_id)
+        if not task:
+            return
+        if task["parent_task_id"] is not None:
+            self.set_subtask_completed(task_id, completed)
+            return
         entry = self.row(
             "SELECT id FROM daily_entries WHERE task_id = ? AND entry_date = ?",
             (task_id, self.today_iso()),
@@ -1105,6 +1431,8 @@ class Database:
         task = self.get_task(task_id)
         if not task:
             return 0
+        if task["parent_task_id"] is not None:
+            raise ValueError("子任务不能单独加入每日清单")
         now = self.local_timestamp()
         cur = self.conn.execute(
             """INSERT INTO daily_entries(

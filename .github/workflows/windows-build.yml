@@ -51,7 +51,7 @@ jobs:
             --product "ENTP 自强手册" `
             --company "ENTP Manual" `
             --description "好奇心动力回流系统" `
-            --build-version 2.1.5 `
+            --build-version 2.1.9 `
             --python-version 3.13 `
             --template vendor\flet-build-template `
             --exclude .git .github .venv .devtools build release tests vendor extensions scripts outputs logs backups designs installer markdown tmppdauzxck __pycache__ "*.pyc" "*.db" "*.spec" `
@@ -70,7 +70,7 @@ jobs:
           }
           Push-Location build\flutter
           try {
-            & $flutter build windows --build-name 2.1.5 `
+            & $flutter build windows --build-name 2.1.9 `
               --no-version-check --suppress-analytics
             if ($LASTEXITCODE -ne 0) {
               throw "Windows icon resource rebuild failed with exit code $LASTEXITCODE"
@@ -111,16 +111,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
           powershell.exe -NoProfile -ExecutionPolicy Bypass `
             -File installer\create_update_manifest.ps1 `
-            -Version "2.1.5" `
-            -InstallerPath "release\ENTP-Manual-2.1.5-Setup.exe" `
+            -Version "2.1.9" `
+            -InstallerPath "release\ENTP-Manual-2.1.9-Setup.exe" `
             -OutputPath "release\update.json"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ENTP-Manual-2.1.5-Windows
+          name: ENTP-Manual-2.1.9-Windows
           path: |
-            release/ENTP-Manual-2.1.5-Setup.exe
+            release/ENTP-Manual-2.1.9-Setup.exe
             release/update.json
           if-no-files-found: error
 
@@ -136,6 +136,6 @@ jobs:
             gh release create $tag --title $tag --generate-notes
           }
           gh release upload $tag `
-            release\ENTP-Manual-2.1.5-Setup.exe `
+            release\ENTP-Manual-2.1.9-Setup.exe `
             release\update.json `
             --clobber

@@ -94,7 +94,7 @@ try {
         --product $productName `
         --company "ENTP Manual" `
         --description $description `
-        --build-version 2.1.5 `
+        --build-version 2.1.9 `
         --python-version 3.13 `
         --template "vendor\flet-build-template" `
         --exclude .git .github .venv .devtools build release tests vendor extensions scripts outputs logs backups designs installer markdown tmppdauzxck __pycache__ "*.pyc" "*.db" "*.spec" `
@@ -117,7 +117,7 @@ try {
     Push-Location $flutterProject
     try {
         & (Join-Path $flutterRoot "bin\flutter.bat") build windows `
-            --build-name 2.1.5 `
+            --build-name 2.1.9 `
             --no-version-check `
             --suppress-analytics
         if ($LASTEXITCODE -ne 0) {

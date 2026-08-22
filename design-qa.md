@@ -74,3 +74,22 @@
 没有剩余 P0、P1 或 P2 问题。候审状态图标的语义和识别度已经改善，窗口与任务栏也改用项目 Logo。
 
 final result: passed
+
+---
+
+# 子任务界面 Design QA
+
+- 版本：2.1.9
+- 日期：2026-08-21
+- 参考图：`C:\Users\25244\AppData\Local\Temp\codex-clipboard-a21fa00c-8e50-4d54-ab9c-7d7c3a8066a8.png`
+- 当前实现：`C:\Users\25244\AppData\Local\Temp\codex-entp-218-final-ui.png`
+- 对照图：`C:\Users\25244\AppData\Local\Temp\codex-entp-218-design-comparison.png`
+
+## 结果：PASSED
+
+- 父任务仅保留展开箭头、复选框和标题，子任务仅保留复选框和标题。
+- 所有子任务行占满同一个父任务卡片，可用宽度一致，不再随标题长度变化。
+- 父子层级、左侧缩进、白色圆角卡片和轻边框与参考图一致。
+- 未增加常驻拖动把手、说明文字或尾部操作按钮。
+- 真实鼠标拖放已验证：子任务拖到分组标题可提升为父任务，父任务拖到另一个父任务行可缩进为子任务。
+- 拖放期间没有新增未捕获异常；数据只在有效落点接受后通过单次 SQLite 事务变更。

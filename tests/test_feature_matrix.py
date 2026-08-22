@@ -568,6 +568,34 @@ class MarkdownTests(TemporaryDatabaseTestCase):
         )
         self.assertEqual(list(target.parent.glob(f".{target.name}.*.tmp")), [])
 
+    def test_MD_07_locked_document_does_not_block_other_runtime_syncs(self) -> None:
+        locked_task = self.db.create_task(self.db.current_mainline_id(), "将被占用")
+        healthy_task = self.db.create_task(self.db.current_mainline_id(), "仍可同步")
+        self.markdown.sync_all(self.db)
+        locked_path = self.markdown.path_for("task", locked_task)
+        healthy_path = self.markdown.path_for("task", healthy_task)
+        locked_before = locked_path.read_text(encoding="utf-8")
+        self.db.update_task(locked_task, title="占用后的新标题")
+        self.db.update_task(healthy_task, title="其他文档继续更新")
+        original_replace = markdown_module.os.replace
+
+        def lock_one_document(source: Path, destination: Path):
+            if Path(destination) == locked_path:
+                raise PermissionError("simulated-file-lock")
+            return original_replace(source, destination)
+
+        with patch.object(
+            markdown_module.os,
+            "replace",
+            side_effect=lock_one_document,
+        ):
+            self.markdown.sync_all(self.db, continue_on_error=True)
+
+        self.assertEqual(locked_path.read_text(encoding="utf-8"), locked_before)
+        self.assertIn("其他文档继续更新", healthy_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(self.markdown.last_sync_errors), 1)
+        self.assertEqual(self.markdown.last_sync_errors[0][0], locked_path)
+
     def test_MD_08_images_are_copied_and_resolved_inside_workspace(self) -> None:
         task = self.db.create_task(self.db.current_mainline_id(), "带图片的记录")
         self.markdown.sync_all(self.db)

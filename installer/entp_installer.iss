@@ -1,5 +1,5 @@
 #define MyAppName "ENTP 自强手册"
-#define MyAppVersion "2.1.5"
+#define MyAppVersion "2.1.9"
 #define MyAppPublisher "ENTP Manual"
 #define MyAppExeName "ENTPManual.exe"
 #define MyTaskName "ENTPManual_Autostart"
@@ -17,7 +17,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 OutputDir=..\release
-OutputBaseFilename=ENTP-Manual-2.1.5-Setup
+OutputBaseFilename=ENTP-Manual-2.1.9-Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern

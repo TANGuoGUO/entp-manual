@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.1.5-Setup.exe">下载 Windows 安装版</a>
+  <a href="https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.1.9-Setup.exe">下载 Windows 安装版</a>
   ·
   <a href="https://github.com/TANGuoGUO/entp-manual/releases/latest">版本说明</a>
   ·
@@ -44,8 +44,7 @@
 你可以保存多条主线，每条主线下也可以有多个任务。不过，真正开始做事时，页面只展示当前选择的主线，并突出一个“当前推进”任务。
 
 - 顶部输入框直接创建任务，按回车保存。
-- 任务详情可以写自由正文和下一步最小行动。
-- “记录一次执行”保存本次行动、结果和新的下一步。
+- 任务详情可以修改标题并写自由正文，内容会自动保存。
 - “暂存新灵感”只记录一句话，不中断当前工作。
 - “没动力了”不是在宣布这件事做不下去。它只是打开候审区，让你暂时看看以前感兴趣的东西，再决定要不要回来继续。
 
@@ -89,14 +88,13 @@
 
 ### 5. Markdown、备份和本地数据
 
-数据保存在本机 SQLite。每条主线、任务、灵感、执行记录和每日账本还会生成独立 Markdown 文件：
+数据保存在本机 SQLite。每条主线、任务、灵感和每日账本还会生成独立 Markdown 文件：
 
 ```text
 markdown/
 ├─ 主线/
 ├─ 任务/
 ├─ 思路/
-├─ 执行记录/
 └─ 每日/
 ```
 
@@ -115,8 +113,8 @@ markdown/
 建议先做四步：
 
 1. 在“当前主线”顶部添加一个自己的任务。
-2. 打开任务详情，把下一步写成一个现在能开始的小动作。
-3. 做一点以后，点击“记录一次执行”。
+2. 把一项任务设为当前任务，只突出眼前要推进的这一件事。
+3. 真正做完以后点击“完成当前任务”，完成事实会进入完成日历。
 4. 中途想到别的事情时，用“暂存新灵感”记一句话，然后继续当前任务。
 
 示例内容可以修改、完成或归档。它只在数据库为空时生成一次，不会覆盖已有数据。
@@ -145,7 +143,7 @@ markdown/
 
 ### 实施意图：为什么任务需要具体的下一步
 
-实施意图研究关注“在什么情况下，采取什么行动”这种具体计划。相比只写一个抽象目标，明确行动条件和动作更容易启动行为。软件中的“下一步最小行动”借鉴了这个方向，但当前字段不是一套严格的“如果—那么”计划工具。
+实施意图研究关注“在什么情况下，采取什么行动”这种具体计划。相比只写一个抽象目标，明确行动条件和动作更容易启动行为。当前版本用短任务和子任务承载可立即开始的行动，但还没有单独的“下一步最小行动”字段。
 
 参考：Gollwitzer 与 Sheeran，[Implementation Intentions and Goal Achievement: A Meta-analysis of Effects and Processes](https://doi.org/10.1016/S0065-2601(06)38002-1)，2006。
 
@@ -169,7 +167,7 @@ markdown/
 
 ## 下载和安装
 
-[直接下载 Windows 安装版](https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.1.5-Setup.exe)
+[直接下载 Windows 安装版](https://github.com/TANGuoGUO/entp-manual/releases/latest/download/ENTP-Manual-2.1.9-Setup.exe)
 
 安装时可以选择安装目录、桌面快捷方式，以及是否在登录 Windows 后于后台启动。程序支持系统托盘隐藏和标准 Windows 卸载。
 

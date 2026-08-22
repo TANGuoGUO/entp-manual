@@ -47,6 +47,7 @@ class MarkdownStore:
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
+        self.last_sync_errors: list[tuple[Path, OSError]] = []
         self.root.mkdir(parents=True, exist_ok=True)
         for directory, _prefix in KIND_INFO.values():
             (self.root / directory).mkdir(parents=True, exist_ok=True)
@@ -265,9 +266,16 @@ class MarkdownStore:
         path = self.path_for(kind, object_id)
         return self._merge_synced_path(path, system, user_template)
 
-    def sync_all(self, db: "Database") -> dict[str, int]:
+    def sync_all(
+        self,
+        db: "Database",
+        *,
+        continue_on_error: bool = False,
+    ) -> dict[str, int]:
+        """同步全部文档；应用运行时可隔离单个被占用文件的写入失败。"""
         counts = {key: 0 for key in KIND_INFO}
         counts["daily"] = 0
+        self.last_sync_errors = []
         mainlines = db.list_mainlines()
         tasks = db.list_tasks()
         thoughts = db.list_thoughts()
@@ -280,25 +288,56 @@ class MarkdownStore:
                ORDER BY l.id"""
         )
 
+        def sync_one(path: Path, kind: str, operation) -> None:
+            try:
+                operation()
+            except OSError as error:
+                if not continue_on_error:
+                    raise
+                # 只隔离文件系统错误；代码错误和数据错误仍向上抛出，避免静默损坏。
+                self.last_sync_errors.append((path, error))
+            else:
+                counts[kind] += 1
+
         for row in mainlines:
-            self._sync_mainline(row)
-            counts["mainline"] += 1
+            sync_one(
+                self.path_for("mainline", int(row["id"])),
+                "mainline",
+                lambda current=row: self._sync_mainline(current),
+            )
         for row in tasks:
-            self._sync_task(db, row)
-            counts["task"] += 1
+            sync_one(
+                self.path_for("task", int(row["id"])),
+                "task",
+                lambda current=row: self._sync_task(db, current),
+            )
         for row in thoughts:
-            self._sync_thought(db, row)
-            counts["thought"] += 1
+            sync_one(
+                self.path_for("thought", int(row["id"])),
+                "thought",
+                lambda current=row: self._sync_thought(db, current),
+            )
         for row in logs:
-            self._sync_execution(row)
-            counts["execution"] += 1
+            sync_one(
+                self.path_for("execution", int(row["id"])),
+                "execution",
+                lambda current=row: self._sync_execution(current),
+            )
 
         daily_dates = db.daily_dates()
         for day in daily_dates:
-            self._sync_daily(db, day)
-            counts["daily"] += 1
+            sync_one(
+                self.daily_path(day),
+                "daily",
+                lambda current=day: self._sync_daily(db, current),
+            )
 
-        self._write_indexes(mainlines, tasks, thoughts, logs, daily_dates)
+        try:
+            self._write_indexes(mainlines, tasks, thoughts, logs, daily_dates)
+        except OSError as error:
+            if not continue_on_error:
+                raise
+            self.last_sync_errors.append((self.root / "索引文件", error))
         return counts
 
     def _frontmatter(self, pairs: Iterable[tuple[str, object]]) -> str:
@@ -362,6 +401,7 @@ _以上为程序同步区，请在下方自由记录。_"""
                 ("type", "task"),
                 ("title", row["title"]),
                 ("mainline", row["mainline_name"]),
+                ("parent_task", row["parent_task_title"] or ""),
                 ("status", row["status"]),
                 ("priority", row["priority"]),
                 ("due_date", row["due_date"]),
@@ -378,6 +418,7 @@ _以上为程序同步区，请在下方自由记录。_"""
 # {row['title']}
 
 **所属主线：** {row['mainline_name']}  
+**父任务：** {row['parent_task_title'] or '无（独立任务）'}<br>
 **状态：** {row['status']} · **优先级：** {row['priority']} · **进度：** {row['progress']}%
 **当前焦点：** {'是' if row['is_focus'] else '否'}  
 **最小下一步：** {row['next_action'] or '尚未填写'}
