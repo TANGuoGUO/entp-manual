@@ -1954,6 +1954,14 @@ class EntpFletApp:
                         disabled=completed or is_subtask,
                     ),
                     ft.IconButton(
+                        ft.Icons.DELETE_OUTLINE_ROUNDED,
+                        tooltip="删除任务",
+                        icon_color=MUTED,
+                        on_click=lambda _: self.request_delete_task(
+                            task_id, close_detail=True
+                        ),
+                    ),
+                    ft.IconButton(
                         ft.Icons.CLOSE_ROUNDED,
                         tooltip="关闭任务详情",
                         icon_color=MUTED,
@@ -2165,17 +2173,32 @@ class EntpFletApp:
         )
         return ft.Row(
             [
+                *(
+                    ft.IconButton(
+                        icon,
+                        tooltip=label,
+                        icon_size=18,
+                        icon_color=ft.Colors.WHITE if current_status == status else color,
+                        bgcolor=color if current_status == status else ft.Colors.TRANSPARENT,
+                        disabled=current_status == status,
+                        on_click=lambda _, target=status: self._set_idea_status(thought_id, target),
+                        style=ft.ButtonStyle(shape=rounded(9)),
+                    )
+                    for status, label, icon, color in actions
+                ),
+                ft.Container(width=6),
                 ft.IconButton(
-                    icon,
-                    tooltip=label,
+                    ft.Icons.DELETE_OUTLINE_ROUNDED,
+                    tooltip="删除灵感",
                     icon_size=18,
-                    icon_color=ft.Colors.WHITE if current_status == status else color,
-                    bgcolor=color if current_status == status else ft.Colors.TRANSPARENT,
-                    disabled=current_status == status,
-                    on_click=lambda _, target=status: self._set_idea_status(thought_id, target),
+                    icon_color=RED,
+                    on_click=self._guard_ui_action(
+                        "删除灵感失败",
+                        lambda _: self.request_delete_thought(thought_id),
+                        "无法删除这个灵感",
+                    ),
                     style=ft.ButtonStyle(shape=rounded(9)),
-                )
-                for status, label, icon, color in actions
+                ),
             ],
             spacing=2,
             tight=True,
@@ -2673,6 +2696,14 @@ class EntpFletApp:
                         ft.Container(title_field, expand=True),
                         status_actions,
                         ft.IconButton(
+                            ft.Icons.DELETE_OUTLINE_ROUNDED,
+                            tooltip="删除这条灵感",
+                            icon_color=RED,
+                            on_click=lambda _: self.request_delete_thought(
+                                thought_id, close_review=True
+                            ),
+                        ),
+                        ft.IconButton(
                             ft.Icons.CLOSE_ROUNDED,
                             tooltip="关闭",
                             icon_color=MUTED,
@@ -2929,6 +2960,16 @@ class EntpFletApp:
                         [
                             ft.Container(title_field, expand=True),
                             status_actions,
+                            ft.IconButton(
+                                ft.Icons.DELETE_OUTLINE_ROUNDED,
+                                tooltip="删除这条灵感",
+                                icon_color=RED,
+                                on_click=self._guard_ui_action(
+                                    "删除灵感失败",
+                                    lambda _: self.request_delete_thought(thought_id),
+                                    "无法删除这条灵感",
+                                ),
+                            ),
                         ],
                         spacing=16,
                         vertical_alignment=ft.CrossAxisAlignment.START,
@@ -3565,6 +3606,17 @@ class EntpFletApp:
                     ),
                 ]
             )
+        is_inbox = str(mainline["name"]) == "收集箱"
+        actions.append(
+            ft.TextButton(
+                "删除主线",
+                icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
+                disabled=is_inbox,
+                tooltip="收集箱是系统区域，不能删除" if is_inbox else None,
+                on_click=lambda _: self._request_delete_mainline_from_editor(mainline_id),
+                style=ft.ButtonStyle(color=RED),
+            )
+        )
 
         content = ft.Column(
             [
@@ -3679,6 +3731,7 @@ class EntpFletApp:
         body_field.on_blur = save
         is_current = mainline_id == self.db.current_mainline_id()
         is_archived = str(mainline["status"]) == "已归档"
+        is_inbox = str(mainline["name"]) == "收集箱"
         active_count = sum(
             1 for item in self.db.list_mainlines() if str(item["status"]) != "已归档"
         )
@@ -3751,6 +3804,26 @@ class EntpFletApp:
                                                         else None
                                                     ),
                                                     style=ft.ButtonStyle(color=MUTED),
+                                                ),
+                                                ft.TextButton(
+                                                    "删除主线",
+                                                    icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
+                                                    disabled=is_inbox,
+                                                    tooltip=(
+                                                        "收集箱是系统区域，不能删除"
+                                                        if is_inbox
+                                                        else None
+                                                    ),
+                                                    on_click=(
+                                                        None
+                                                        if is_inbox
+                                                        else self._guard_ui_action(
+                                                            "删除主线失败",
+                                                            lambda _, mid=mainline_id: self.request_delete_mainline(mid),
+                                                            "无法删除这条主线",
+                                                        )
+                                                    ),
+                                                    style=ft.ButtonStyle(color=RED),
                                                 ),
                                             ],
                                             spacing=10,
@@ -3841,6 +3914,12 @@ class EntpFletApp:
                             on_click=lambda _: self.shift_selected_day(1),
                         ),
                         ft.IconButton(
+                            ft.Icons.EDIT_CALENDAR_OUTLINED,
+                            tooltip="选择日期",
+                            icon_color=BLUE,
+                            on_click=lambda _: self.open_day_picker(),
+                        ),
+                        ft.IconButton(
                             ft.Icons.CALENDAR_MONTH_ROUNDED,
                             tooltip="打开完成日历",
                             icon_color=MUTED,
@@ -3853,6 +3932,41 @@ class EntpFletApp:
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
+
+    def open_day_picker(self) -> None:
+        """让今日账本可以直接跳到任意一天，而不只是一次翻一天。
+
+        未来日期没有账本内容，所以上限仍然是今天，和「后一天」按钮保持一致。
+        """
+        last_day = date.today()
+
+        def apply_picker(event) -> None:
+            picked = getattr(getattr(event, "control", None), "value", None)
+            if picked is None:
+                return
+            if isinstance(picked, datetime):
+                picked = picked.date()
+            if not isinstance(picked, date):
+                return
+            self.selected_day = min(picked, last_day)
+            self.show_view(self.NAV_TODAY)
+
+        picker = ft.DatePicker(
+            value=self.selected_day,
+            first_date=date(2000, 1, 1),
+            last_date=last_day,
+            current_date=last_day,
+            help_text="选择要查看的日期",
+            confirm_text="查看这天",
+            cancel_text="取消",
+            on_change=self._guard_ui_action(
+                "跳转到所选日期失败",
+                apply_picker,
+                "无法打开这个日期",
+            ),
+        )
+        self.page.show_dialog(picker)
+        self.page.update()
 
     def _today_view(self) -> ft.Container:
         selected_iso = self.selected_day.isoformat()
@@ -4148,6 +4262,17 @@ class EntpFletApp:
                         overflow=ft.TextOverflow.ELLIPSIS,
                     ),
                     ft.Row(meta, spacing=5, tight=True),
+                    ft.IconButton(
+                        ft.Icons.DELETE_OUTLINE_ROUNDED,
+                        tooltip="从账本删除这条记录",
+                        icon_size=18,
+                        icon_color="#C2C5CB" if completed else "#B9BDC4",
+                        on_click=self._guard_ui_action(
+                            "删除账本记录失败",
+                            lambda _, eid=entry_id: self.request_delete_daily_entry(eid),
+                            "无法删除这条记录",
+                        ),
+                    ),
                 ],
                 spacing=8,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -4903,6 +5028,178 @@ class EntpFletApp:
         self.refresh_vault(update=False)
         self.content_switcher.content = self._vault_view()
         self.page.update()
+
+    # ------------------------------- Deletion -------------------------------
+    # 归档只是改变状态，删除才是真正移除数据。每次删除都先确认一次，
+    # 避免一次误点丢掉已经积累的记录。
+
+    def _confirm_delete(
+        self, title: str, message: str, confirm_label: str, action
+    ) -> None:
+        def cancel(_=None) -> None:
+            self._close_dialog()
+
+        def confirm(_=None) -> None:
+            self._close_dialog()
+            action()
+
+        self.page.show_dialog(
+            ft.AlertDialog(
+                modal=True,
+                title=ft.Text(title, size=18, weight=ft.FontWeight.W_700, color=INK),
+                content=ft.Text(message, size=14, color=MUTED),
+                actions=[
+                    ft.TextButton("取消", on_click=cancel),
+                    ft.FilledButton(
+                        confirm_label,
+                        icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
+                        on_click=confirm,
+                        style=ft.ButtonStyle(color=ft.Colors.WHITE, bgcolor=RED),
+                    ),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+                bgcolor=SURFACE,
+                shape=rounded(18),
+            )
+        )
+        self.page.update()
+
+    def request_delete_task(self, task_id: int, *, close_detail: bool = False) -> None:
+        task = self.db.get_task(task_id)
+        if not task:
+            return
+        child_ids = [int(row["id"]) for row in self.db.list_subtasks(task_id)]
+        label = str(task["title"])
+        if close_detail:
+            # 确认框要叠在详情之上，先把详情收起来，删除后才不会残留一个
+            # 指向已删除任务的弹窗。
+            self.close_task_detail()
+
+        def perform() -> None:
+            try:
+                self.db.delete_task(task_id)
+            except ValueError as error:
+                self._notify_error(str(error))
+                return
+            self.markdown.remove_document("task", task_id)
+            for child_id in child_ids:
+                self.markdown.remove_document("task", child_id)
+            if self.selected_task_id == task_id or self.selected_task_id in child_ids:
+                self.selected_task_id = None
+            self._active_editor_dialog = None
+            self._sync_markdown()
+            self.show_view(self.active_index)
+            self._notify_success(f"已删除任务「{label}」")
+
+        extra = f"和它的 {len(child_ids)} 个子任务" if child_ids else ""
+        self._confirm_delete(
+            "删除任务",
+            f"「{label}」{extra}会被永久删除，每日账本中的相关记录也会一起移除。",
+            "删除",
+            perform,
+        )
+
+    def request_delete_thought(
+        self, thought_id: int, *, close_review: bool = False
+    ) -> None:
+        thought = self.db.get_thought(thought_id)
+        if not thought:
+            return
+        label = str(thought["title"])
+        if close_review:
+            # 确认框要叠在详情之上，先把详情收起来。
+            self._close_dialog()
+            self.close_thought_review()
+
+        def perform() -> None:
+            try:
+                self.db.delete_thought(thought_id)
+            except ValueError as error:
+                self._notify_error(str(error))
+                return
+            self.markdown.remove_document("thought", thought_id)
+            if self.selected_thought_id == thought_id:
+                self.selected_thought_id = None
+            self._active_editor_dialog = None
+            self._sync_markdown()
+            self.show_view(self.NAV_IDEAS)
+            self._notify_success(f"已删除灵感「{label}」")
+
+        self._confirm_delete(
+            "删除灵感",
+            f"「{label}」以及它关联的执行记录会被永久删除。",
+            "删除",
+            perform,
+        )
+
+    def _request_delete_mainline_from_editor(self, mainline_id: int) -> None:
+        """先把主线编辑器收起来，再弹确认框，避免两层弹窗叠在一起。"""
+        self._active_editor_dialog = None
+        self.selected_mainline_id = None
+        self._close_dialog()
+        self.request_delete_mainline(mainline_id)
+
+    def request_delete_mainline(self, mainline_id: int) -> None:
+        mainline = next(
+            (m for m in self.db.list_mainlines() if int(m["id"]) == mainline_id), None
+        )
+        if not mainline:
+            return
+        task_ids = [int(task["id"]) for task in self.db.list_tasks(mainline_id)]
+        label = str(mainline["name"])
+
+        def perform() -> None:
+            try:
+                next_id = self.db.delete_mainline(mainline_id)
+            except ValueError as error:
+                self._notify_error(str(error))
+                return
+            self.markdown.remove_document("mainline", mainline_id)
+            for task_id in task_ids:
+                self.markdown.remove_document("task", task_id)
+            self.current_mid = next_id
+            if self.selected_mainline_id == mainline_id:
+                self.selected_mainline_id = None
+            self._active_editor_dialog = None
+            self._sync_markdown()
+            self.refresh_vault(update=False)
+            self.content_switcher.content = self._vault_view()
+            self.page.update()
+            self._notify_success(f"已删除主线「{label}」")
+
+        self._confirm_delete(
+            "删除主线",
+            f"主线「{label}」下的 {len(task_ids)} 个任务和账本记录会被永久删除；"
+            "灵感不会删除，会转移到收集箱。",
+            "删除主线",
+            perform,
+        )
+
+    def request_delete_daily_entry(self, entry_id: int) -> None:
+        entry = self.db.row(
+            "SELECT id, title, task_title_snapshot FROM daily_entries WHERE id = ?",
+            (entry_id,),
+        )
+        if not entry:
+            return
+        label = str(entry["title"] or entry["task_title_snapshot"] or "这条记录")
+
+        def perform() -> None:
+            try:
+                self.db.delete_daily_entry(entry_id)
+            except ValueError as error:
+                self._notify_error(str(error))
+                return
+            self._sync_markdown()
+            self.show_view(self.active_index)
+            self._notify_success("已从账本中删除这条记录")
+
+        self._confirm_delete(
+            "删除账本记录",
+            f"「{label}」会从当天账本和完成日历中移除。",
+            "删除",
+            perform,
+        )
 
     def open_markdown(self, kind: str, object_id: int) -> None:
         # Product records open in the same rich Markdown detail editor.  The

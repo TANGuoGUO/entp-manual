@@ -94,6 +94,27 @@ class MarkdownStore:
         path = self.path_for(kind, object_id)
         return path.read_text(encoding="utf-8") if path.exists() else ""
 
+    def remove_document(self, kind: str, object_id: int) -> bool:
+        """删除某个对象对应的 Markdown 文档和图片附件。
+
+        数据库里删除对象后调用，否则导出的文件夹里会留下已经不存在的
+        任务/灵感文档。返回是否真的删掉了东西。
+        """
+        removed = False
+        path = self.path_for(kind, object_id)
+        if path.exists():
+            try:
+                path.unlink()
+                removed = True
+            except OSError:
+                return False
+        _directory, prefix = KIND_INFO[kind]
+        attachment_dir = self.root / "_assets" / kind / f"{prefix}{int(object_id):04d}"
+        if attachment_dir.exists():
+            shutil.rmtree(attachment_dir, ignore_errors=True)
+            removed = True
+        return removed
+
     def add_image(self, kind: str, object_id: int, source: str | Path) -> tuple[Path, str]:
         """Copy an image into the managed Markdown tree and return its relative link."""
         source_path = Path(source).resolve()

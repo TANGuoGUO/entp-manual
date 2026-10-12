@@ -1387,6 +1387,137 @@ class Database:
         )
         return self.carry_daily_entries((row["id"] for row in rows), self.today_iso())
 
+    # ------------------------------------------------------------------
+    # Deletion
+    # ------------------------------------------------------------------
+    # 归档只改变状态，删除才是真正移除数据。所有删除都在一个事务里完成，
+    # 任一语句失败就整体回滚，避免留下查不到来源的孤儿行。
+
+    def _purge_tasks(self, task_ids: Iterable[int]) -> int:
+        """删除任务本身以及所有依赖它们的记录，返回删除的任务数。"""
+        ids = [int(task_id) for task_id in task_ids]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        with self.conn:
+            # 先解除父子关系，否则删除父任务时会被层级守卫触发器拦住。
+            self.conn.execute(
+                f"UPDATE tasks SET parent_task_id = NULL WHERE parent_task_id IN ({placeholders})",
+                ids,
+            )
+            self.conn.execute(
+                f"DELETE FROM daily_entries WHERE task_id IN ({placeholders})", ids
+            )
+            self.conn.execute(
+                f"DELETE FROM task_events WHERE task_id IN ({placeholders})", ids
+            )
+            self.conn.execute(
+                f"DELETE FROM task_execution_logs WHERE task_id IN ({placeholders})",
+                ids,
+            )
+            self.conn.execute(
+                f"DELETE FROM thought_task_links WHERE task_id IN ({placeholders})",
+                ids,
+            )
+            removed = self.conn.execute(
+                f"DELETE FROM tasks WHERE id IN ({placeholders})", ids
+            ).rowcount
+        return int(removed or 0)
+
+    def delete_task(self, task_id: int) -> dict[str, int]:
+        """彻底删除一个任务及其直属子任务。
+
+        每日账本中属于这些任务的记录会一起删除，避免留下没有来源的条目。
+        """
+        task = self.row("SELECT id, mainline_id FROM tasks WHERE id = ?", (task_id,))
+        if not task:
+            raise ValueError("任务不存在或已经删除")
+        mainline_id = int(task["mainline_id"])
+        child_ids = [
+            int(row["id"])
+            for row in self.rows(
+                "SELECT id FROM tasks WHERE parent_task_id = ?", (task_id,)
+            )
+        ]
+        removed = self._purge_tasks([int(task_id), *child_ids])
+        self._ensure_focus_for_mainline(mainline_id)
+        return {"tasks": removed, "subtasks": len(child_ids)}
+
+    def delete_thought(self, thought_id: int) -> None:
+        if not self.row("SELECT id FROM thoughts WHERE id = ?", (thought_id,)):
+            raise ValueError("灵感不存在或已经删除")
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM execution_logs WHERE thought_id = ?", (thought_id,)
+            )
+            self.conn.execute(
+                "DELETE FROM thought_review_events WHERE thought_id = ?", (thought_id,)
+            )
+            self.conn.execute(
+                "DELETE FROM thought_task_links WHERE thought_id = ?", (thought_id,)
+            )
+            self.conn.execute(
+                "DELETE FROM thought_links WHERE source_thought_id = ? OR target_thought_id = ?",
+                (thought_id, thought_id),
+            )
+            self.conn.execute("DELETE FROM thoughts WHERE id = ?", (thought_id,))
+
+    def delete_mainline(self, mainline_id: int) -> int:
+        """永久删除一条主线，返回删除后应该展示的主线 id。
+
+        主线下的任务和账本记录会一并删除；灵感不删除，而是转移到收集箱，
+        这样误删主线不会顺手丢掉还没整理的想法。
+        """
+        mainline = self.row("SELECT * FROM mainlines WHERE id = ?", (mainline_id,))
+        if not mainline:
+            raise ValueError("主线不存在")
+        if str(mainline["name"]) == "收集箱":
+            raise ValueError("收集箱是系统区域，不能删除")
+        others = self.rows(
+            """SELECT id FROM mainlines WHERE id <> ? AND name <> '收集箱'
+               ORDER BY CASE WHEN status = '已归档' THEN 1 ELSE 0 END, id""",
+            (mainline_id,),
+        )
+        if not others:
+            raise ValueError("至少需要保留一条主线")
+        current_id = self.current_mainline_id()
+        fallback_id = int(others[0]["id"])
+        inbox_id = self.get_or_create_inbox()
+        task_ids = [
+            int(row["id"])
+            for row in self.rows("SELECT id FROM tasks WHERE mainline_id = ?", (mainline_id,))
+        ]
+        # _purge_tasks 自己开启事务，因此不能在 with self.conn 中调用。
+        self._purge_tasks(task_ids)
+        with self.conn:
+            self.conn.execute(
+                "UPDATE thoughts SET mainline_id = ? WHERE mainline_id = ?",
+                (inbox_id, mainline_id),
+            )
+            self.conn.execute(
+                "DELETE FROM daily_entries WHERE mainline_id = ?", (mainline_id,)
+            )
+            self.conn.execute(
+                "DELETE FROM task_execution_logs WHERE mainline_id = ?", (mainline_id,)
+            )
+            self.conn.execute("DELETE FROM mainlines WHERE id = ?", (mainline_id,))
+            if mainline_id == current_id:
+                self.conn.execute(
+                    """INSERT INTO app_settings(key, value) VALUES ('current_mainline_id', ?)
+                       ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                    (str(fallback_id),),
+                )
+        return fallback_id if mainline_id == current_id else current_id
+
+    def delete_daily_entry(self, entry_id: int) -> None:
+        if not self.row("SELECT id FROM daily_entries WHERE id = ?", (entry_id,)):
+            raise ValueError("记录不存在或已经删除")
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM task_events WHERE daily_entry_id = ?", (entry_id,)
+            )
+            self.conn.execute("DELETE FROM daily_entries WHERE id = ?", (entry_id,))
+
     def _record_task_event(
         self,
         task_id: int | None,
